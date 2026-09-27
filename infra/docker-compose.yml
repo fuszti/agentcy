@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-office-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: mattermost
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - agent-office
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:11.11.1
+    container_name: agent-office-mattermost
+    user: "0:0"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:8065:8065"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:${POSTGRES_PASSWORD}@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://127.0.0.1:8065
+      MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_ENABLECONSOLE: "true"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_SERVICESETTINGS_DISABLELEGACYMMETL: "true"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYALERTS: "false"
+      MM_RATELIMITSETTINGS_ENABLE: "false"
+      MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
+      MM_SERVICESETTINGS_ENABLEAPIPOSTEDIT: "true"
+      MM_SERVICESETTINGS_MAXPOSTSIZE: "65536"
+      MM_LOCALIZATIONSETTINGS_DEFAULTSERVERLOCALE: en
+      MM_LOCALIZATIONSETTINGS_DEFAULTCLIENTLOCALE: en
+    volumes:
+      - ./data/mattermost/config:/mattermost/config
+      - ./data/mattermost/data:/mattermost/data
+      - ./data/mattermost/logs:/mattermost/logs
+      - ./data/mattermost/plugins:/mattermost/plugins
+      - ./data/mattermost/client-plugins:/mattermost/client-plugins
+      - ./data/mattermost/bleve-indexes:/mattermost/bleve-indexes
+    healthcheck:
+      test: ["CMD", "mattermost", "db", "ping"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 60s
+    networks:
+      - agent-office
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.5
+    container_name: agent-office-forgejo
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:3033:3000"
+      - "${BIND_ADDR:-127.0.0.1}:2222:22"
+    environment:
+      USER_UID: 1000
+      USER_GID: 1000
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__database__PATH: /data/gitea/gitea.db
+      FORGEJO__server__ROOT_URL: http://127.0.0.1:3033/
+      FORGEJO__server__HTTP_PORT: "3000"
+      FORGEJO__server__SSH_PORT: "22"
+      FORGEJO__server__DISABLE_SSH: "false"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "false"
+      FORGEJO__webhook__ALLOWED_HOST_LIST: private,loopback
+      FORGEJO__log__LEVEL: Info
+    volumes:
+      - ./data/forgejo:/data
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/forgejo/v1/version || wget -q --spider http://localhost:3000/api/v1/version"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - agent-office
+
+networks:
+  agent-office:
+    name: agent-office

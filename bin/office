@@ -1,0 +1,4 @@
+#!/bin/sh
+# Agent office CLI entry point.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli/office.ts" "$@"

@@ -1,0 +1,115 @@
+┌────────────────────────────────────────────────────────┐
+│                       OVERVIEW                         │
+├────────────────────────────────────────────────────────┤
+│Sessions                                             47 │
+│Messages                                          1,977 │
+│Days                                                  1 │
+└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│                    COST & TOKENS                       │
+├────────────────────────────────────────────────────────┤
+│Total Cost                                       $27.41 │
+│Avg Cost/Day                                     $27.41 │
+│Avg Tokens/Session                                 3.7M │
+│Median Tokens/Session                             31.9K │
+│Input                                              5.9M │
+│Output                                           416.3K │
+│Cache Read                                       165.1M │
+│Cache Write                                           0 │
+└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│                      MODEL USAGE                       │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/kimi-k2.7-code                             │
+│  Messages                                        1,133 │
+│  Input Tokens                                     3.5M │
+│  Output Tokens                                  352.5K │
+│  Cache Read                                     100.7M │
+│  Cache Write                                         0 │
+│  Cost                                         $23.8307 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/deepseek-v4-pro                            │
+│  Messages                                          333 │
+│  Input Tokens                                   940.4K │
+│  Output Tokens                                  144.2K │
+│  Cache Read                                      27.0M │
+│  Cache Write                                         0 │
+│  Cost                                          $1.5001 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/mimo-v2.6-flash                            │
+│  Messages                                          127 │
+│  Input Tokens                                     1.0M │
+│  Output Tokens                                   64.9K │
+│  Cache Read                                      27.9M │
+│  Cache Write                                         0 │
+│  Cost                                          $0.2396 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/mimo-v2.6-pro                              │
+│  Messages                                           94 │
+│  Input Tokens                                   239.8K │
+│  Output Tokens                                  104.1K │
+│  Cache Read                                       7.5M │
+│  Cache Write                                         0 │
+│  Cost                                          $0.2219 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/kimi-k3                                    │
+│  Messages                                           39 │
+│  Input Tokens                                   178.5K │
+│  Output Tokens                                   34.6K │
+│  Cache Read                                       1.8M │
+│  Cache Write                                         0 │
+│  Cost                                          $1.5996 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/deepseek-v4.1-flash                        │
+│  Messages                                           25 │
+│  Input Tokens                                    79.0K │
+│  Output Tokens                                    6.6K │
+│  Cache Read                                     188.4K │
+│  Cache Write                                         0 │
+│  Cost                                          $0.0164 │
+├────────────────────────────────────────────────────────┤
+[1A└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│                      TOOL USAGE                        │
+├────────────────────────────────────────────────────────┤
+│ bash               ████████████████████ 674 (35.8%)    │
+│ edit               ██████████           363 (19.3%)    │
+│ read               ██████████           351 (18.6%)    │
+│ write              ██                    83 ( 4.4%)    │
+│ todowrite          ██                    78 ( 4.1%)    │
+│ websearch          █                     64 ( 3.4%)    │
+│ office_chat_reply  █                     55 ( 2.9%)    │
+│ glob               █                     27 ( 1.4%)    │
+│ office_pr_get      █                     23 ( 1.2%)    │
+│ office_ticket_get  █                     20 ( 1.1%)    │
+│ webfetch           █                     19 ( 1.0%)    │
+│ office_chat_post   █                     16 ( 0.8%)    │
+│ office_ticket_co.. █                     16 ( 0.8%)    │
+│ office_chat_react  █                     12 ( 0.6%)    │
+│ grep               █                     11 ( 0.6%)    │
+│ office_repo_clone  █                      9 ( 0.5%)    │
+│ office_ticket_cl.. █                      8 ( 0.4%)    │
+│ office_pr_merge    █                      8 ( 0.4%)    │
+│ office_pr_create   █                      5 ( 0.3%)    │
+│ office_pr_review   █                      5 ( 0.3%)    │
+│ office_project_l.. █                      4 ( 0.2%)    │
+│ office_office_di.. █                      3 ( 0.2%)    │
+│ office_chat_chan.. █                      3 ( 0.2%)    │
+│ office_ticket_list █                      3 ( 0.2%)    │
+│ office_pr_diff     █                      3 ( 0.2%)    │
+│ office_chat_thread █                      3 ( 0.2%)    │
+│ office_pr_list     █                      3 ( 0.2%)    │
+│ office_ticket_up.. █                      2 ( 0.1%)    │
+│ office_office_sh.. █                      2 ( 0.1%)    │
+│ office_office_fo.. █                      2 ( 0.1%)    │
+│ office_project_j.. █                      2 ( 0.1%)    │
+│ task               █                      2 ( 0.1%)    │
+│ office_chat_read   █                      2 ( 0.1%)    │
+│ office_chat_join   █                      1 ( 0.1%)    │
+│ office_office_fo.. █                      1 ( 0.1%)    │
+│ office_chat_search █                      1 ( 0.1%)    │
+└────────────────────────────────────────────────────────┘
+

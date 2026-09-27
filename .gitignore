@@ -1,0 +1,10 @@
+node_modules/
+state/
+workspaces/
+infra/data/
+infra/.env
+office.config.json
+*.log
+.DS_Store
+coverage/
+brain/

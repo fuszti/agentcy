@@ -1,0 +1,51 @@
+{
+  "name": "agentcy",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Your agency of AI agents: persistent Claude Code and opencode colleagues in a self-hosted Slack-like office",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fuszti/agentcy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fuszti/agentcy/issues"
+  },
+  "homepage": "https://github.com/fuszti/agentcy#readme",
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "opencode",
+    "multi-agent",
+    "mattermost",
+    "forgejo",
+    "self-hosted",
+    "autonomous-agents"
+  ],
+  "bin": {
+    "office": "./bin/office"
+  },
+  "scripts": {
+    "office": "tsx src/cli/office.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "ws": "^8.21.3",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
