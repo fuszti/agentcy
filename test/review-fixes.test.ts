@@ -6,7 +6,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { vaultSetLeak } from '../src/admin/commands.js'
+import { leakedKeyKind, vaultSetLeak } from '../src/admin/commands.js'
 import { runHelper } from '../src/admin/helper.js'
 import { createFinanceAlertState, detectLimitAlerts } from '../src/finance/alerts.js'
 import type { LimitRow } from '../src/finance/render.js'
@@ -33,6 +33,31 @@ describe('vaultSetLeak', () => {
     for (const ok of ['vault', 'vault set openrouter', 'vault set', 'vault check openrouter', 'vault rm openrouter', 'how do I vault set a key?', 'status']) {
       expect(vaultSetLeak(ok), ok).toBeUndefined()
     }
+  })
+})
+
+describe('leakedKeyKind', () => {
+  const hex = (n: number) => 'a1b2c3d4e5f60718'.repeat(Math.ceil(n / 16)).slice(0, n)
+
+  it('recognises known key formats anywhere in a message', () => {
+    expect(leakedKeyKind(`sk-or-v1-${hex(64)}`)).toBe('OpenRouter')
+    expect(leakedKeyKind(`gen use this key sk-or-v1-${hex(64)} for kim`)).toBe('OpenRouter')
+    expect(leakedKeyKind(`here:\nsk-ant-api03-${hex(40)}_Ab-${hex(40)}`)).toBe('Anthropic')
+    expect(leakedKeyKind(`token=sk-ant-oat01-${hex(80)}`)).toBe('Anthropic')
+    expect(leakedKeyKind(`\`sk-${hex(64)}\``)).toBe('API')
+  })
+
+  it('leaves ordinary messages alone, including hashes, ids and short sk- words', () => {
+    for (const ok of [
+      'status', 'hire kim --harness opencode', `commit ${hex(40)}`, `session 3f2c1a9e-7b4d-4c1a-9e2f-${hex(12)}`,
+      'sk-or-v1-short', 'sk-ant-nope', 'sk-1234', 'task-' + hex(64), 'risk-' + hex(64),
+      'http://127.0.0.1:3033/office/tasks/issues/12', 'vault set openrouter',
+    ]) expect(leakedKeyKind(ok), ok).toBeUndefined()
+  })
+
+  it('never returns the key itself', () => {
+    const key = `sk-or-v1-${hex(64)}`
+    expect(leakedKeyKind(key)).not.toContain(hex(8))
   })
 })
 

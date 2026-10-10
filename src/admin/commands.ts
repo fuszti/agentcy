@@ -118,6 +118,19 @@ export function vaultSetLeak(text: string): string | undefined {
   return /^\s*(?:office\s+|!)?vault\s+set\s+(\S+)\s+\S/i.exec(text)?.[1]
 }
 
+// Known API-key shapes only: purging is permanent, so a generic "looks random" rule that could
+// also hit commit hashes, session ids or links is deliberately not used.
+const KEY_PATTERNS: [kind: string, re: RegExp][] = [
+  ['OpenRouter', /(?<![A-Za-z0-9])sk-or-v1-[A-Za-z0-9]{32,}/],
+  ['Anthropic', /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{32,}/],
+  ['API', /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{40,}/], // OpenCode Go/Zen, OpenAI-style
+]
+
+/** Which kind of API key a chat message contains, if any. Never returns the key. */
+export function leakedKeyKind(text: string): string | undefined {
+  return KEY_PATTERNS.find(([, re]) => re.test(text))?.[0]
+}
+
 /** True if `name` is an admin-channel command. */
 export function isAllowedCommand(name: string): boolean {
   return allowedCommands.has(name.toLowerCase())

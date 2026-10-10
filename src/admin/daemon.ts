@@ -10,7 +10,7 @@ import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { ChatPost, OfficeRequest, RequestStatus } from '../lib/types.js'
 import { listAgents, loadAgent } from '../lib/config.js'
-import { helpText, parseCommandLine, parseRequestId, vaultSetLeak } from './commands.js'
+import { helpText, parseCommandLine, parseRequestId, leakedKeyKind, vaultSetLeak } from './commands.js'
 import { listRequests, loadRequest, setRequestStatus, updateRequest } from '../lib/requests.js'
 import { formatProjectCreatedFyi, formatProjectCreatedNotice } from '../lib/project-requests.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
@@ -519,26 +519,27 @@ async function run() {
   }
 
   /**
-   * A key was pasted into chat (`vault set <id> <value>`): purge the post right away, before
+   * A key was pasted into chat (`vault set <id> <value>`, or a known key format anywhere in the
+   * message): purge the post right away, before
    * any parsing or queueing, so it neither waits behind running jobs nor reaches the helper model.
    * Needs the owner's token: bots can't delete other users' posts.
    */
-  async function purgeLeakedKey(post: ChatPost, entryId: string, replyChannelId: string): Promise<void> {
+  async function purgeLeakedKey(post: ChatPost, leak: { entryId?: string; kind?: string }, replyChannelId: string): Promise<void> {
     const purged = await new MattermostClient(config.mattermostUrl, secrets!.mattermost.adminToken).deletePost(post.id, true).then(() => true, () => false)
-    adminLog(`vault set with a value in chat post=${post.id} purged=${purged}`)
+    adminLog(`key in chat (${leak.entryId ? 'vault set' : leak.kind}) post=${post.id} purged=${purged}`)
     await mm.createPost({
       channelId: replyChannelId,
-      message: `⚠️ That looked like an API key, so I ${purged ? 'permanently deleted your message' : 'tried to delete your message (failed: delete it yourself)'}. ` +
-        `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`office vault set ${entryId}\` (input hidden).`,
+      message: `⚠️ That looked like ${leak.kind ? `an ${leak.kind} key` : 'an API key'}, so I ${purged ? 'permanently deleted your message' : 'tried to delete your message (failed: delete it yourself)'}. ` +
+        `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`office vault set ${leak.entryId ?? '<id>'}\` (input hidden; \`vault\` lists the ids).`,
     }).catch(() => {})
   }
 
   function handlePost(post: ChatPost) {
     if (post.userId === botUserId) return // ignore own posts
     if ((post.channelId === channel.id || post.channelId === financeChannel.id) && post.userId === secrets!.mattermost.humanUserId) {
-      const leaked = vaultSetLeak(post.message)
-      if (leaked) {
-        purgeLeakedKey(post, leaked, post.channelId).catch((e) => adminLog(`purge failed post=${post.id}: ${(e as Error).message}`))
+      const leak = { entryId: vaultSetLeak(post.message), kind: leakedKeyKind(post.message) }
+      if (leak.entryId || leak.kind) {
+        purgeLeakedKey(post, leak, post.channelId).catch((e) => adminLog(`purge failed post=${post.id}: ${(e as Error).message}`))
         return
       }
     }
