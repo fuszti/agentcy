@@ -32,12 +32,8 @@ describe.skipIf(!process.env.OFFICE_E2E)('agent loop e2e', () => {
     if (process.env.OPENCODE_GO_API_KEY) setSecret(root, 'opencode-go', process.env.OPENCODE_GO_API_KEY, cfg.resourceGroups)
     hired = true // set before hire: a half-failed hire may still have created the identity
     await run(office, ['hire', name, '--harness', 'opencode', '--model', helperModel], { cwd: root, timeout: 240_000 })
-    // hire returns before the agent's office-mcp is listening, and a DM posted before that is never delivered
-    const mcpLog = path.join(agentStateDir(name), 'mcp.log')
-    const up = () => { try { return fs.readFileSync(mcpLog, 'utf8').includes('office-mcp up for') } catch { return false } }
-    const end = Date.now() + 120_000
-    while (!up() && Date.now() < end) await new Promise((r) => setTimeout(r, 1000))
-    if (!up()) throw new Error(`office-mcp of @${name} did not come up within 120s`)
+    // No wait for the agent's office-mcp here on purpose: hire returns before it is listening, and
+    // the DM below must still arrive (its first catch-up replays from when the bot account was created).
   }, 300_000)
 
   afterAll(async () => {

@@ -22,7 +22,7 @@ import {
   sanitizeAttachmentFilename,
   workspaceDir,
 } from '../lib/workspace.js'
-import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, renderDigest, renderEvents, type AgentContext } from './policy.js'
+import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, firstCatchUpCursor, renderDigest, renderEvents, type AgentContext } from './policy.js'
 import { ClaudeTmuxWakeAdapter } from '../lib/harness/claude.js'
 import { OpencodeWakeAdapter } from '../lib/harness/opencode.js'
 import { ensureInboxKey, queueSystemPrompt, verifyPrompt } from '../lib/inbox.js'
@@ -878,10 +878,10 @@ async function deliveryTick() {
 // ------------------------------------------------------------------ start
 await server.connect(new StdioServerTransport())
 log(`office-mcp up for @${me.username} (wake=${useChannel ? 'channel' : rec.harness})`)
-/** Replay posts made while this MCP was not running (first start: nothing to replay). */
+/** Replay posts made while this MCP was not running (first start: since the agent's chat account was created). */
 async function catchUp() {
-  if (!lastSeen) { markSeen(Date.now()); return }
-  const cutoff = lastSeen // fixed: markSeen() advances lastSeen while we replay
+  const started = Date.now()
+  const cutoff = lastSeen || firstCatchUpCursor(me.create_at, rec.createdAt, started) // fixed: markSeen() advances lastSeen while we replay
   const since = Math.max(cutoff, Date.now() - 24 * 3600_000)
   let n = 0
   for (const ch of await mm.getChannelsForUser(team.id)) {
@@ -891,6 +891,7 @@ async function catchUp() {
       onPost(p, { mentions: [], channelType: ch.type, channelName: ch.name, senderName: p.username }); n++
     }
   }
+  markSeen(started) // also when nothing was replayed, so the next catch-up does not start from the beginning again
   log(`catch-up replayed ${n} posts since ${new Date(since).toISOString()}`)
 }
 const ws = mm.connectWebSocket(onPost, undefined, () => void catchUp().catch(e => log(`catch-up failed: ${(e as Error).message}`)))
