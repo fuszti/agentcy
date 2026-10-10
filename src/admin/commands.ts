@@ -118,6 +118,14 @@ export function vaultSetLeak(text: string): string | undefined {
   return /^\s*(?:office\s+|!)?vault\s+set\s+(\S+)\s+\S/i.exec(text)?.[1]
 }
 
+/**
+ * The shell command to show after purging a leaked key. The captured "entry id" is untrusted
+ * text (with swapped arguments it IS the key), so it is only repeated when it is a real entry.
+ */
+export function vaultSetHint(entryId: string | undefined, knownIds: string[]): string {
+  return `office vault set ${entryId !== undefined && knownIds.includes(entryId) ? entryId : '<id>'}`
+}
+
 // Known API-key shapes only: purging is permanent, so a generic "looks random" rule that could
 // also hit commit hashes, session ids or links is deliberately not used.
 const KEY_PATTERNS: [kind: string, re: RegExp][] = [

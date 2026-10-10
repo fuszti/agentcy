@@ -6,7 +6,8 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { leakedKeyKind, vaultSetLeak } from '../src/admin/commands.js'
+import { fileURLToPath } from 'node:url'
+import { leakedKeyKind, vaultSetHint, vaultSetLeak } from '../src/admin/commands.js'
 import { runHelper } from '../src/admin/helper.js'
 import { createFinanceAlertState, detectLimitAlerts } from '../src/finance/alerts.js'
 import type { LimitRow } from '../src/finance/render.js'
@@ -15,7 +16,7 @@ import { ensureVaultKey } from '../src/lib/vault.js'
 import { promptHidden } from '../src/cli/vault-cmd.js'
 
 const run = promisify(execFile)
-const repo = path.resolve(import.meta.dirname, '..')
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') // import.meta.dirname needs Node 20.11
 
 let tmp: string
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-fixes-')) })
@@ -33,6 +34,24 @@ describe('vaultSetLeak', () => {
     for (const ok of ['vault', 'vault set openrouter', 'vault set', 'vault check openrouter', 'vault rm openrouter', 'how do I vault set a key?', 'status']) {
       expect(vaultSetLeak(ok), ok).toBeUndefined()
     }
+  })
+})
+
+describe('vaultSetHint', () => {
+  const known = ['claude-sub', 'openrouter', 'go-2']
+
+  it('repeats the entry id only when it is a known vault entry', () => {
+    expect(vaultSetHint('openrouter', known)).toBe('office vault set openrouter')
+    expect(vaultSetHint('go-2', known)).toBe('office vault set go-2')
+  })
+
+  it('never repeats anything else: with swapped arguments the "id" is the key', () => {
+    const key = 'sk-or-v1-' + 'a1b2c3d4'.repeat(8)
+    expect(vaultSetLeak(`vault set ${key} openrouter`)).toBe(key)
+    expect(vaultSetHint(key, known)).toBe('office vault set <id>')
+    expect(vaultSetHint('MyUnknownFormatSecret123', known)).toBe('office vault set <id>')
+    expect(vaultSetHint(undefined, known)).toBe('office vault set <id>')
+    expect(vaultSetHint('OpenRouter', known)).toBe('office vault set <id>')
   })
 })
 

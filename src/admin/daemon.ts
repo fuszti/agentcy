@@ -10,7 +10,8 @@ import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { ChatPost, OfficeRequest, RequestStatus } from '../lib/types.js'
 import { listAgents, loadAgent } from '../lib/config.js'
-import { helpText, parseCommandLine, parseRequestId, leakedKeyKind, vaultSetLeak } from './commands.js'
+import { helpText, parseCommandLine, parseRequestId, leakedKeyKind, vaultSetHint, vaultSetLeak } from './commands.js'
+import { vaultSpecs } from '../lib/vault.js'
 import { listRequests, loadRequest, setRequestStatus, updateRequest } from '../lib/requests.js'
 import { formatProjectCreatedFyi, formatProjectCreatedNotice } from '../lib/project-requests.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
@@ -530,7 +531,7 @@ async function run() {
     await mm.createPost({
       channelId: replyChannelId,
       message: `⚠️ That looked like ${leak.kind ? `an ${leak.kind} key` : 'an API key'}, so I ${purged ? 'permanently deleted your message' : 'tried to delete your message (failed: delete it yourself)'}. ` +
-        `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`office vault set ${leak.entryId ?? '<id>'}\` (input hidden; \`vault\` lists the ids).`,
+        `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`${vaultSetHint(leak.entryId, vaultSpecs(config.resourceGroups).map((x) => x.id))}\` (input hidden; \`vault\` lists the ids).`,
     }).catch(() => {})
   }
 
