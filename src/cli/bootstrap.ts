@@ -10,6 +10,7 @@ import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgen
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { OfficeSecrets, ChatChannel } from '../lib/types.js'
+import { composeFileArgs, writeInfraEnv } from '../lib/infra.js'
 
 const INFRA_DIR = path.join(repoRoot(), 'infra')
 const ENV_PATH = path.join(INFRA_DIR, '.env')
@@ -20,7 +21,7 @@ function randomPassword(): string {
 
 function dockerCompose(args: string[], options?: { capture?: boolean; quiet?: boolean }): Promise<string> {
   return new Promise((resolve, reject) => {
-    const cp = spawn('docker', ['compose', '-f', path.join(INFRA_DIR, 'docker-compose.yml'), ...args], {
+    const cp = spawn('docker', ['compose', ...composeFileArgs(repoRoot()), ...args], {
       stdio: options?.capture ? ['ignore', 'pipe', 'pipe'] : options?.quiet ? ['ignore', 'ignore', 'ignore'] : 'inherit',
     })
     let out = ''
@@ -57,6 +58,8 @@ function dockerExec(container: string, user: string | undefined, command: string
 
 async function ensureInfraEnv(): Promise<void> {
   if (existsSync(ENV_PATH)) {
+    // `office setup` may have written only the public URLs so far.
+    if (!(await readEnv()).POSTGRES_PASSWORD) writeInfraEnv(repoRoot(), { POSTGRES_PASSWORD: randomPassword() })
     await chmod(ENV_PATH, 0o600)
     return
   }

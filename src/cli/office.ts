@@ -4,21 +4,30 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import type { AgentRecord, Harness } from '../lib/types.js'
-import { agentStateDir, listAgents, loadAgent, loadConfig, loadSecrets, repoRoot, saveAgent, stateDir } from '../lib/config.js'
+import { agentStateDir, listAgents, loadAgent, loadConfig, loadSecrets, repoRoot, saveAgent, saveConfig, stateDir } from '../lib/config.js'
 import { bootstrap, createAgentIdentity, retireAgentIdentity } from './bootstrap.js'
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import { agentBrainDir, commitBrain, ensureBrain, prepareAgentGitIdentity, projectBrainDir, seedAgentBrain, workspaceDir, writeWorkspaceInstructions } from '../lib/workspace.js'
 import { isProjectMember, listProjects, loadProject, saveProject, validateProjectName } from '../lib/projects.js'
-import { claudeLaunchCommand, claudeMcpConfig, claudeSessionExists, claudeSettings, readStatus, settleClaudeStartup, writeStatus } from '../lib/harness/claude.js'
+import { claudeLaunchCommand, claudeMcpConfig, claudeSessionExists, claudeSettings, ensureClaudeOnboarded, readStatus, settleClaudeStartup, writeStatus } from '../lib/harness/claude.js'
 import { OpencodeClient, buildOpencodeConfig, forkOpencodeSession, opencodeLaunchCommand, opencodeTranscript } from '../lib/harness/opencode.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
+import { composeFileArgs } from '../lib/infra.js'
+import { MOVED_PROMPT, exportOffice, importOffice } from '../lib/migrate.js'
+import { cmdVault } from './vault-cmd.js'
+import { runSetup } from './setup.js'
+import { opencodeProviderOverrides, vaultEnvDefaults, vaultEnvForAgent, withEnvFile, writeAgentEnvFile } from '../lib/vault.js'
 import { findClaudeSessionFile, readClaudeTranscript, renderTranscript } from '../lib/transcript.js'
 import { capturePane, killWindow, openWindow, paneAlive, windowExists, windowTarget } from '../lib/tmux.js'
 import { run as runAdminDaemon } from '../admin/daemon.js'
 import { renderStatusMarkdown } from '../admin/commands.js'
 import { collectFinanceSnapshot } from '../finance/collect.js'
 import { renderAgentDetail, renderFinanceReport, renderGroupDetail, renderLimitsSection } from '../finance/render.js'
+import { checkGroupForAgent, claudeConfigDir, groupIdForAgent } from '../finance/groups.js'
+import { readHeadroom } from '../finance/headroom.js'
+import { readClaudeAccountInfo } from '../finance/claude.js'
+import { cmdGroup, resolveHireGroup, type GroupDeps } from './group-cmd.js'
 import {
   buildActivityTimeline,
   buildRichStatusRow,
@@ -40,6 +49,8 @@ import {
 
 const root = repoRoot()
 const cfg = await loadConfig()
+/** What the owner opens in a browser (LAN/Tailscale on a home server); agents use cfg.*Url. */
+const publicUrls = cfg.publicUrls ?? { mattermost: cfg.mattermostUrl, forgejo: cfg.forgejoUrl }
 
 async function agent(name: string): Promise<AgentRecord> {
   const r = await loadAgent(name)
@@ -88,7 +99,7 @@ async function nextOpencodePort(): Promise<number> {
 }
 
 async function ensureInfra() {
-  const r = spawnSync('docker', ['compose', '-f', path.join(root, 'infra/docker-compose.yml'), 'up', '-d'], { stdio: 'inherit' })
+  const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit' })
   if (r.status !== 0) throw new Error('docker compose up failed')
 }
 
@@ -106,8 +117,13 @@ async function startAgent(rec: AgentRecord, opts: { forkParentSession?: string }
   const envPrefix = await prepareAgentGitIdentity(root, cfg, rec)
   const statusFile = path.join(dir, 'status.json')
   writeStatus(statusFile, 'starting')
+  // Vault keys reach the harness through a chmod-600 env file, never the command line.
+  const env = vaultEnvForAgent(root, cfg.resourceGroups, rec)
+  const envFile = writeAgentEnvFile(dir, env)
 
   if (rec.harness === 'claude') {
+    const configDir = claudeConfigDir(root, cfg.resourceGroups.find(g => g.id === groupIdForAgent(rec, cfg.resourceGroups)))
+    if (configDir) ensureClaudeOnboarded(configDir)
     const settingsFile = path.join(dir, 'claude-settings.json')
     const mcpFile = path.join(dir, 'mcp.json')
     writeJsonFile(settingsFile, claudeSettings(root, statusFile, ws))
@@ -117,14 +133,14 @@ async function startAgent(rec: AgentRecord, opts: { forkParentSession?: string }
     if (opts.forkParentSession) {
       rec.sessionId = randomUUID()
       mode = { kind: 'fork', parentSessionId: opts.forkParentSession, sessionId: rec.sessionId }
-    } else if (rec.sessionId && claudeSessionExists(rec.sessionId)) {
+    } else if (rec.sessionId && claudeSessionExists(rec.sessionId, configDir)) {
       mode = { kind: 'resume', sessionId: rec.sessionId }
     } else {
       rec.sessionId = rec.sessionId ?? randomUUID()
       mode = { kind: 'new', sessionId: rec.sessionId }
     }
     await saveAgent(rec)
-    const cmd = claudeLaunchCommand({ root, agent: rec, workspace: ws, settingsFile, mcpFile, mode, envPrefix })
+    const cmd = withEnvFile(claudeLaunchCommand({ root, agent: rec, workspace: ws, settingsFile, mcpFile, mode, envPrefix, configDir }), envFile)
     const { openWindow } = await import('../lib/tmux.js')
     await openWindow(cfg.tmuxSession, rec.name, ws, cmd)
     const r = await settleClaudeStartup(windowTarget(cfg.tmuxSession, rec.name))
@@ -137,11 +153,11 @@ async function startAgent(rec: AgentRecord, opts: { forkParentSession?: string }
   rec.opencodePort = rec.opencodePort ?? await nextOpencodePort()
   await saveAgent(rec)
   const configPath = path.join(dir, 'opencode.json')
-  writeJsonFile(configPath, buildOpencodeConfig({ root, agent: rec.name, model: rec.model, instructions: [path.join(ws, 'AGENTS.md')] }))
+  writeJsonFile(configPath, buildOpencodeConfig({ root, agent: rec.name, model: rec.model, instructions: [path.join(ws, 'AGENTS.md')], provider: opencodeProviderOverrides(cfg.resourceGroups, env) }))
   const client = new OpencodeClient(`http://127.0.0.1:${rec.opencodePort}`)
   if (!rec.sessionId) {
     // Create the desk session headless first so the TUI can open it by id.
-    const cmd0 = opencodeLaunchCommand({ root, agent: rec.name, workspace: ws, configPath, port: rec.opencodePort, model: rec.model, headless: true, envPrefix })
+    const cmd0 = withEnvFile(opencodeLaunchCommand({ root, agent: rec.name, workspace: ws, configPath, port: rec.opencodePort, model: rec.model, headless: true, envPrefix }), envFile)
     const { spawn } = await import('node:child_process')
     const p = spawn('sh', ['-c', cmd0], { stdio: 'ignore', detached: true })
     try {
@@ -151,7 +167,7 @@ async function startAgent(rec: AgentRecord, opts: { forkParentSession?: string }
     } finally { try { process.kill(-p.pid!) } catch { p.kill() } }
     await sleep(1000)
   }
-  const cmd = opencodeLaunchCommand({ root, agent: rec.name, workspace: ws, configPath, port: rec.opencodePort, model: rec.model, sessionId: rec.sessionId, envPrefix })
+  const cmd = withEnvFile(opencodeLaunchCommand({ root, agent: rec.name, workspace: ws, configPath, port: rec.opencodePort, model: rec.model, sessionId: rec.sessionId, envPrefix }), envFile)
   const { openWindow } = await import('../lib/tmux.js')
   await openWindow(cfg.tmuxSession, rec.name, ws, cmd)
   await client.waitForServer(45_000)
@@ -181,27 +197,56 @@ async function stopAdminDaemon(): Promise<void> {
   console.log('admin: stopped')
 }
 
+/** Stop every agent session and the admin daemon (systemd ExecStop). The Docker stack keeps running. */
+async function shutdownOffice(): Promise<void> {
+  for (const a of (await allAgents()).filter(a => a.status === 'hired')) await stopAgent(a)
+  await stopAdminDaemon()
+}
+
+async function cmdExport(pos: string[]) {
+  const out = path.resolve(pos[0] ?? `agentcy-export-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`)
+  console.log('stopping agents, admin daemon and the chat/tickets stack for a consistent copy…')
+  await shutdownOffice()
+  const m = exportOffice(root, out)
+  // Claude subscription logins never travel (see migrate.ts): each extra group needs a fresh login on the new machine.
+  const claudeGroupIds = cfg.resourceGroups.filter(g => g.kind === 'claude-subscription' && g.configDir).map(g => g.id)
+  console.log(`exported ${m.agents.length} agent(s) to ${out}
+This bundle holds every token and the vault key: copy it straight to the server (e.g. scp -r) and delete it afterwards.
+On the server: ./install.sh and choose "import", or \`office setup --import ${path.basename(out)}\`.${claudeGroupIds.length ? `
+Then log in each extra Claude subscription group on the new machine: ${claudeGroupIds.map(id => `\`office group login ${id}\``).join(', ')}.` : ''}
+This office is left stopped. Don't start it again here, or you'll have two offices drifting apart.`)
+}
+
+async function cmdImport(pos: string[], flags: Record<string, string | boolean>) {
+  if (!pos[0]) throw new Error('usage: office import <export-dir> [--force]   (office setup --import <dir> also sets up access/keys)')
+  const { moved } = importOffice(root, path.resolve(pos[0]), { force: flags.force === true })
+  for (const name of moved) await queueSystemPrompt(root, name, 'moved', MOVED_PROMPT)
+  console.log(`imported; ${moved.length} agent(s) start fresh sessions from their brains. Next: office init (re-checks the stack), then office start`)
+}
+
 // ------------------------------------------------------------------ commands
 async function cmdHire(pos: string[], flags: Record<string, string | boolean>) {
   const name = slug(pos[0] ?? '')
-  if (!name) throw new Error('usage: office hire <name> [--harness claude|opencode] [--model M] [--focus "..."] [--display "Name"] [--chrome] [--no-start]')
+  if (!name) throw new Error('usage: office hire <name> [--harness claude|opencode] [--model M] [--focus "..."] [--display "Name"] [--chrome] [--group <id|auto>] [--no-start]')
   if ((await allAgents()).some(a => a.name === name)) throw new Error(`${name} already exists`)
   const harness = (str(flags.harness) ?? 'claude') as Harness
   const model = str(flags.model) ?? (harness === 'claude' ? cfg.defaults.claudeModel : cfg.defaults.opencodeModel)
   const displayName = str(flags.display) ?? name[0].toUpperCase() + name.slice(1)
   const focus = str(flags.focus) ?? 'general'
+  const group = resolveHireGroup(str(flags.group), { harness, model }, cfg.resourceGroups, readHeadroom(root)?.usedPercent ?? {})
   ensureBrain(root)
   const identity = await createAgentIdentity(name, displayName, `${harness} agent (${model}) — ${focus}`)
   const rec: AgentRecord = {
     name, displayName, harness, model, status: 'hired', pastSessions: [], chrome: flags.chrome === true,
     mattermost: identity.mattermost, forgejo: identity.forgejo, createdAt: new Date().toISOString(),
   }
+  if (group) rec.group = group
   await saveAgent(rec)
   seedAgentBrain(root, rec, focus)
   commitBrain(root, `Hire @${name}`)
   await queueSystemPrompt(root, name, 'welcome',
     `<office-system kind="welcome">You just joined the office as @${name}. Read your instructions (CLAUDE.md / AGENTS.md), look around with office_directory and chat_channels, then post ONE short hello in #ag-lobby saying what you focus on (${focus}). After that, wait for events.</office-system>`)
-  console.log(`hired @${name} (${harness}, ${model})`)
+  console.log(`hired @${name} (${harness}, ${model}${rec.group ? `, group ${rec.group}` : ''})`)
   if (flags['no-start'] !== true) await startAgent(rec)
 }
 
@@ -244,7 +289,7 @@ async function cmdStatus(flags: Record<string, string | boolean>) {
   const md = flags.md === true
   const all = flags.all === true
   const rows = await buildRichStatusRows(all)
-  const footer = `chat: ${cfg.mattermostUrl}   tickets: ${cfg.forgejoUrl}   sessions: tmux attach -t ${cfg.tmuxSession}${fs.existsSync(path.join(stateDir(), 'freeze')) ? '   ❄ FROZEN' : ''}`
+  const footer = `chat: ${publicUrls.mattermost}   tickets: ${publicUrls.forgejo}   sessions: tmux attach -t ${cfg.tmuxSession}${fs.existsSync(path.join(stateDir(), 'freeze')) ? '   ❄ FROZEN' : ''}`
   console.log(md ? buildRichStatusMarkdown(rows, { footer }) : buildRichStatusPlain(rows, { footer }))
 }
 
@@ -266,6 +311,7 @@ async function cmdInspect(pos: string[]) {
   const identityLines = [
     `- **harness:** ${a.harness}`,
     `- **model:** ${a.model}`,
+    `- **group:** ${groupIdForAgent(a, cfg.resourceGroups) ?? '–'}`,
     `- **session:** ${a.sessionId ?? '–'}`,
     `- **status:** ${a.status}`,
     `- **projects:** ${(await listProjects(root)).filter(p => !p.archived && p.members.includes(a.name)).map(p => p.name).join(', ') || '–'}`,
@@ -324,7 +370,7 @@ async function cmdInspect(pos: string[]) {
 async function cmdFinance(pos: string[]) {
   const arg = pos[0]?.toLowerCase()
   const snapshot = await collectFinanceSnapshot(root, cfg)
-  const footer = `chat: ${cfg.mattermostUrl}#${cfg.financeChannel}`
+  const footer = `chat: ${publicUrls.mattermost}#${cfg.financeChannel}`
 
   if (!arg || arg === 'today') {
     console.log(renderFinanceReport('today', snapshot.groupsToday, snapshot.agentsMerged, { footer, limits: snapshot.limits }))
@@ -405,7 +451,8 @@ async function cmdFork(pos: string[], flags: Record<string, string | boolean>) {
   // Count what the fork inherits so a later merge replays only the new part.
   let inherited = 0
   if (parent.harness === 'claude') {
-    const f = findClaudeSessionFile(parent.sessionId)
+    const parentDir = claudeConfigDir(root, cfg.resourceGroups.find(g => g.id === groupIdForAgent(parent, cfg.resourceGroups)))
+    const f = findClaudeSessionFile(parent.sessionId, parentDir)
     inherited = f ? readClaudeTranscript(f).length : 0
   } else {
     inherited = opencodeTranscript(await new OpencodeClient(`http://127.0.0.1:${parent.opencodePort}`).messages(parent.sessionId)).length
@@ -415,6 +462,7 @@ async function cmdFork(pos: string[], flags: Record<string, string | boolean>) {
   const rec: AgentRecord = {
     name, displayName: `${parent.displayName}·${name.split('-').pop()}`, harness: parent.harness, model: parent.model, status: 'hired',
     pastSessions: [], chrome: parent.chrome, mattermost: identity.mattermost, forgejo: identity.forgejo, createdAt: new Date().toISOString(),
+    group: parent.group,
     forkedFrom: { parent: parent.name, parentSessionId: parent.sessionId, inheritedMessages: inherited, forkedAt: new Date().toISOString() },
   }
   // Brain: copy the parent's files; keep the parent's memory as the 3-way merge base.
@@ -445,7 +493,10 @@ async function summarize(raw: string, from: string, into: string): Promise<strin
   fs.writeFileSync(tmp, raw)
   const prompt = `The attached file is the work transcript of agent @${from} since it forked from (or independently of) agent @${into}. ` +
     `Write a dense merge memo (max ~1500 words) that lets @${into} continue as if it had lived this experience itself: goals, what was done (files, commits, tickets, threads by id), decisions and why, facts learned, open questions, promises made to others, and next steps. Preserve exact identifiers, paths and numbers. Output ONLY the memo in markdown.`
-  const r = spawnSync('opencode', ['run', '-m', cfg.defaults.summarizerModel, '-f', tmp, '--', prompt], { cwd: stateDir(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 10 * 60_000 })
+  const summarizerConfig = path.join(stateDir(), 'summarizer-opencode.json')
+  const env = vaultEnvDefaults(root, cfg.resourceGroups, 'opencode')
+  writeJsonFile(summarizerConfig, { $schema: 'https://opencode.ai/config.json', provider: opencodeProviderOverrides(cfg.resourceGroups, env) })
+  const r = spawnSync('opencode', ['run', '-m', cfg.defaults.summarizerModel, '-f', tmp, '--', prompt], { cwd: stateDir(), env: { ...process.env, ...env, OPENCODE_CONFIG: summarizerConfig }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 10 * 60_000 })
   fs.rmSync(tmp, { force: true })
   const out = (r.stdout ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim()
   if (r.status !== 0 || out.length < 200) throw new Error(`summariser failed (${r.status}): ${(r.stderr ?? '').slice(-500)}`)
@@ -459,8 +510,9 @@ async function cmdMerge(pos: string[], flags: Record<string, string | boolean>) 
   const dst = await agent(dstName)
   if (!src.sessionId) throw new Error(`${src.name} has no session`)
 
+  const srcDir = claudeConfigDir(root, cfg.resourceGroups.find(g => g.id === groupIdForAgent(src, cfg.resourceGroups)))
   const entries = src.harness === 'claude'
-    ? readClaudeTranscript(findClaudeSessionFile(src.sessionId) ?? (() => { throw new Error('transcript not found') })())
+    ? readClaudeTranscript(findClaudeSessionFile(src.sessionId, srcDir) ?? (() => { throw new Error('transcript not found') })())
     : opencodeTranscript(await new OpencodeClient(`http://127.0.0.1:${src.opencodePort}`).messages(src.sessionId))
   let start = 0
   if (src.forkedFrom && src.forkedFrom.parent === dst.name) {
@@ -678,6 +730,30 @@ async function main() {
   switch (cmd) {
     case 'init': await bootstrap(); ensureBrain(root); console.log('office initialised'); break
     case 'up': await ensureInfra(); break
+    case 'setup': await runSetup(root, flags); break
+    case 'vault': await cmdVault(root, cfg.resourceGroups, pos); break
+    case 'group': {
+      const deps: GroupDeps = {
+        root, cfg,
+        saveConfig,
+        agents: allAgents,
+        saveAgent,
+        stopAgent,
+        startAgent: async (rec) => startAgent(await agent(rec.name)),
+        claudeAuthStatus: (dir) => {
+          const info = readClaudeAccountInfo(dir)
+          return info ? { loggedIn: info.loggedIn } : undefined
+        },
+        runClaudeLogin: (dir) => spawnSync('claude', ['auth', 'login'], { stdio: 'inherit', env: { ...process.env, ...(dir ? { CLAUDE_CONFIG_DIR: dir } : {}) } }).status ?? 1,
+        isTTY: !!process.stdin.isTTY,
+        log: console.log,
+      }
+      await cmdGroup(pos, flags, deps)
+      break
+    }
+    case 'export': await cmdExport(pos); break
+    case 'import': await cmdImport(pos, flags); break
+    case 'shutdown': await shutdownOffice(); break
     case 'hire': await cmdHire(pos, flags); break
     case 'start': await ensureInfra(); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
     case 'stop': for (const a of await targets()) await stopAgent(a); break
@@ -701,6 +777,11 @@ async function main() {
       if (a.harness === 'claude' && model.includes('/')) throw new Error('claude models are aliases like sonnet, opus, haiku (or a full claude-* id)')
       const old = a.model
       a.model = model
+      if (a.group && checkGroupForAgent(a, a.group, cfg.resourceGroups)) {
+        const oldGroup = a.group
+        a.group = undefined
+        console.log(`@${a.name}: group ${oldGroup} no longer fits ${model} — now using ${groupIdForAgent(a, cfg.resourceGroups) ?? 'no group'}`)
+      }
       await saveAgent(a)
       console.log(`@${a.name}: model ${old} → ${model}; restarting (same session)`)
       await stopAgent(a); await startAgent(await agent(a.name))
@@ -726,9 +807,10 @@ async function main() {
     }
     default:
       console.log(`office <command>
+  setup [--import dir] [--force]  guided first run / reconfigure: owner, access address, API keys, Claude login
   init                         bring up Mattermost + Forgejo, create owner, team, channels, brain
   up                           docker compose up -d
-  hire <name> [--harness claude|opencode] [--model M] [--focus "..."] [--display N] [--chrome] [--no-start]
+  hire <name> [--harness claude|opencode] [--model M] [--focus "..."] [--display N] [--chrome] [--group <id|auto>] [--no-start]
   start|stop|restart [names…]  manage agent sessions (tmux session "${cfg.tmuxSession}")
   admin                        run the #office-admin chat-ops daemon in the foreground
   admin-stop                   stop the admin daemon window
@@ -751,7 +833,14 @@ async function main() {
   project staff <name> [--add a,b] [--remove c]
                                update project members and channel membership
   project archive <name>       archive the project repo
-  logs <agent> [--n 50]        office-mcp log`)
+  logs <agent> [--n 50]        office-mcp log
+  vault [status|set <id>|rm <id>|check|import-opencode]
+                               encrypted provider API keys, injected into agents as env vars
+  group [list|add <kind> --id X [--label L]|rm <id>|login <id>|move <agent> <group>]
+                               resource groups (Claude subscriptions, OpenCode Go / OpenRouter keys)
+  export [dir]                 stop the office and bundle it (chat, tickets, state, brain, workspaces) to move machines
+  import <dir> [--force]       restore a bundle here; agents continue in fresh sessions
+  shutdown                     stop all agent sessions and the admin daemon (the stack keeps running)`)
   }
 }
 

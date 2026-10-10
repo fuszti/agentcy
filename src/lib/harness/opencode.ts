@@ -409,6 +409,8 @@ export interface BuildOpencodeConfigOptions {
   model: string
   instructions: string[]
   extraMcp?: Record<string, unknown>
+  /** `provider` block, e.g. vault keys as `{ openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }`. */
+  provider?: Record<string, unknown>
 }
 
 /**
@@ -431,6 +433,7 @@ export function buildOpencodeConfig(opts: BuildOpencodeConfigOptions): Record<st
     $schema: 'https://opencode.ai/config.json',
     model: opts.model,
     instructions: opts.instructions,
+    ...(opts.provider && Object.keys(opts.provider).length ? { provider: opts.provider } : {}),
     mcp,
     permission: {
       edit: 'allow',

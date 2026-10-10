@@ -3,6 +3,7 @@ state/
 workspaces/
 infra/data/
 infra/.env
+infra/docker-compose.lan.yml
 office.config.json
 *.log
 .DS_Store

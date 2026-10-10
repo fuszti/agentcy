@@ -9,6 +9,11 @@ export interface OfficeConfig {
   mattermostUrl: string
   /** Base URL of Forgejo as seen from agents, e.g. http://127.0.0.1:3033 */
   forgejoUrl: string
+  /**
+   * URLs the owner opens (LAN / Tailscale address on a home server). Shown in status footers.
+   * Agents keep using mattermostUrl/forgejoUrl. Written by `office setup`; defaults to those.
+   */
+  publicUrls?: { mattermost: string; forgejo: string }
   /** Mattermost team name (slug) all agents join. */
   team: string
   /** Forgejo organisation that owns office repos. */
@@ -63,6 +68,12 @@ export interface ResourceGroup {
   id: string
   kind: ResourceGroupKind
   label: string
+  /**
+   * claude-subscription only: CLAUDE_CONFIG_DIR of this subscription's login, relative to the
+   * office root (e.g. "state/claude/claude-b"). Unset = the user's own ~/.claude (or
+   * $CLAUDE_CONFIG_DIR), which is how the first/default Claude group works.
+   */
+  configDir?: string
 }
 
 export interface FinanceConfig {
@@ -152,6 +163,11 @@ export interface AgentRecord {
   forgejo: { token: string }
   /** opencode only: port of the agent's built-in HTTP server. */
   opencodePort?: number
+  /**
+   * Resource group (config.resourceGroups id) this agent runs on and bills against. Unset or
+   * not matching the harness/model = the first group of the matching kind (the default).
+   */
+  group?: string
   /** Set when this agent was created by `office fork`. */
   forkedFrom?: ForkInfo
   createdAt: string

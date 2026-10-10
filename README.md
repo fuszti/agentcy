@@ -94,6 +94,70 @@ Then talk to the agents as you would to colleagues:
 To watch or type into the sessions themselves, run `bin/office attach` (the tmux session
 `office` has one window per agent).
 
+## Run it on a home server
+
+Everything above also works on another Linux machine at home. The office keeps running when your
+laptop sleeps, and you use it from the laptop or phone through the Mattermost app or a browser. On
+the server:
+
+```bash
+git clone https://github.com/fuszti/agentcy.git && cd agentcy && ./install.sh
+```
+
+The installer works like Coolify's: it checks each prerequisite and asks before installing it
+(Docker, Node 20+, tmux, git, Claude Code, opencode; installs are automated on Debian/Ubuntu).
+It then:
+
+- creates a dedicated `agentcy` user with no sudo, because agents get a real shell;
+- clones the repo into `/home/agentcy/agentcy`;
+- runs the **`office setup`** wizard as that user;
+- installs an `agentcy` systemd service, so the office comes back after a reboot.
+
+Pass `--here` to skip the dedicated user and run everything from the current checkout instead.
+
+`office setup` can be re-run at any time. It asks:
+
+- **New office, or import one:** start empty, or bring over an office from `office export`.
+- **Owner:** your chat and tickets username.
+- **Access:** how you'll reach chat and tickets:
+  - *Tailscale HTTPS* (via `tailscale serve`; works anywhere on your tailnet and suits the mobile
+    app);
+  - *LAN IP*: an extra port binding in the gitignored `infra/docker-compose.lan.yml`;
+  - *this machine only*.
+
+  The office itself always talks to `127.0.0.1`. Publishing on `0.0.0.0` is refused.
+- **API keys:** OpenRouter, OpenCode Go/Zen, and so on go into the encrypted vault (see below).
+- **Claude login:** each machine runs `claude auth login` itself. Agentcy never copies Claude
+  subscription credentials between machines: refresh tokens are single-use, so copies log each
+  other out.
+
+**Moving your existing office off the laptop.** On the laptop:
+
+1. `bin/office vault import-opencode` puts your opencode API keys in the vault, so they travel
+   with the office.
+2. `bin/office export ~/agentcy-export` stops the office and bundles chat and ticket data,
+   `state/`, `brain/` and `workspaces/`.
+3. `scp -r` the bundle to the server and choose *import* in `office setup`.
+
+The bundle contains every token, so delete it once you're done. After an import, each agent
+starts a **fresh session** and carries on from its memory and journal, like a shift change.
+Session transcripts stay on the old machine. Don't start the laptop office again afterwards, or
+you'll have two offices drifting apart.
+
+**Credential vault.** `office vault` stores provider API keys encrypted (AES-256-GCM, key in
+`state/vault.key`, chmod 600) and hands them to each agent as environment variables through a
+chmod-600 env file:
+
+- opencode keys go to opencode agents only;
+- an optional `claude-oauth` token from `claude setup-token` goes to Claude agents;
+- an Anthropic API key is never given to Claude agents, since it would override your
+  subscription.
+
+The finance reports and merge summaries read keys from the vault as well. Keys are set only on
+the server's shell (`office vault set openrouter`, input hidden), never in chat. `vault` in
+`#office-admin` shows only status. If a message there looks like it contains a key, the daemon
+permanently deletes it and tells you to rotate the key.
+
 ## Admin console
 
 `bin/office init` creates a private Mattermost channel `#office-admin` (only you and the
@@ -131,6 +195,37 @@ daily report at `finance.dailyReportHour` (default 09:00) and one alert per inci
 crossing 75/90/100%, a group going exhausted/throttled, an agent's hourly spend spiking, or a
 rolling-window limit crossing 80/95%) in `#office-finance`.
 
+### Several subscriptions and keys (resource groups)
+
+A kind of resource can have several groups: several Claude subscriptions, OpenCode Go keys, or
+OpenRouter keys. The first group of each kind is its default, so existing offices keep working
+without changes.
+
+```bash
+office group add claude --id claude-b --label "Claude (work)"   # own CLAUDE_CONFIG_DIR: state/claude/claude-b
+office group login claude-b                                      # server shell only: claude auth login for that dir
+office group add opencode-go --id go-2 --label "Go 2"
+office vault set go-2                                            # that group's API key (hidden input)
+office hire rex --group claude-b      # or --group auto: the group of the right kind with the most headroom
+office group move ada claude-b        # Claude: copies the session transcript and resumes it; opencode: restarts with the new key
+office group                          # groups, default markers, agents, key/login status
+```
+
+- **Claude groups.** Each Claude group runs its agents with its own `CLAUDE_CONFIG_DIR`, so
+  each has its own login, transcripts, `/usage` limits and finance rows.
+  - The optional vault entry for a Claude group (`office vault set claude-b`) is a
+    `claude setup-token` token instead of a login.
+- **API-key groups.** Each OpenCode Go or OpenRouter group uses its own vault key.
+- **Forks** stay in their parent's group.
+- **Limit alerts** in `#office-finance` suggest a `group move` to the group of the same kind
+  with the most headroom. Nothing is moved automatically.
+- `office export` doesn't carry any group's Claude login. Run `office group login <id>` on the
+  new machine.
+
+Using several consumer subscriptions to multiply one person's limits may conflict with
+Anthropic's terms ("ordinary, individual usage"). Separate accounts with their own owners are
+the clean case.
+
 The admin daemon also runs a **watchdog** every `watchdog.alertIntervalSeconds` (default 60s,
 see `office.config.json`) that posts one alert per incident in `#office-admin` (cleared once
 resolved): a window going down, a permission dialog blocked for more than 2 minutes, an agent
@@ -144,6 +239,10 @@ ticket's project channel (or `#office`) to wake it up, at most once per ticket p
 
 | Command | What it does |
 |---|---|
+| `office setup [--import dir] [--force]` | Guided first run or reconfiguration: owner, access address (LAN / Tailscale / local), vault keys, Claude login, then `init`. Run by `install.sh`. |
+| `office vault [status\|set <id>\|rm <id>\|check\|import-opencode]` | Encrypted provider API keys, injected into agents as env vars. `set` prompts with hidden input and works only in a terminal. |
+| `office export [dir]` / `office import <dir> [--force]` | Move the whole office to another machine. Agents continue in fresh sessions. |
+| `office shutdown` | Stop all agent sessions and the admin daemon; the stack keeps running. Used by the systemd service. |
 | `office init` | Bring up infra and create the owner, team, default channels (`#office`, `#ag-lobby`), the Forgejo org, `office/tasks` with status/kind labels, and `brain/`. Idempotent. |
 | `office hire <name> [--harness claude\|opencode] [--model M] [--focus "…"] [--chrome]` | Create a Mattermost bot, a Forgejo user and a brain folder, then start the agent's desk session. |
 | `office start\|stop\|restart [names…]` | Manage sessions. `start` resumes the same session id, so the agent keeps its context. `start` also ensures the admin daemon is running. |

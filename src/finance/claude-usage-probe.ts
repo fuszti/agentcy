@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { capturePane, killSession, openWindow, sendKeys, windowTarget } from '../lib/tmux.js'
-import { settleClaudeStartup } from '../lib/harness/claude.js'
+import { ensureClaudeOnboarded, settleClaudeStartup } from '../lib/harness/claude.js'
 import { parseClaudeUsageOutput, type ClaudeUsageLimits } from './claude-usage.js'
 
 export const PROBE_SESSION = 'office-probe'
@@ -40,17 +40,32 @@ export function isCacheFresh(cache: ClaudeUsageCache | undefined, now = Date.now
   return Number.isFinite(age) && age >= 0 && age < maxAgeMs
 }
 
+const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+/** Pure: the probe's shell command, targeting a group's config dir when given. */
+export function probeCommand(configDir?: string): string {
+  const cmd = 'claude --model haiku --strict-mcp-config'
+  return configDir ? `env CLAUDE_CONFIG_DIR=${q(configDir)} ${cmd}` : cmd
+}
+
+/** Cache file for a group's usage probe: the shared default file, or one per group id. */
+export function claudeUsageCacheFile(root: string, groupId?: string): string {
+  const name = groupId ? `claude-usage-${groupId}.json` : 'claude-usage.json'
+  return path.join(root, 'state/finance', name)
+}
+
 /**
  * Open a throwaway `claude` TUI in tmux session `office-probe` (cwd `state/finance/probe`),
  * answer the folder-trust dialog, wait for the prompt, run `/usage`, capture and parse the
  * result, then kill the probe session. Returns undefined on any failure (never throws).
  */
-export async function runClaudeUsageProbe(root: string): Promise<ClaudeUsageLimits | undefined> {
+export async function runClaudeUsageProbe(root: string, configDir?: string): Promise<ClaudeUsageLimits | undefined> {
   const cwd = path.join(root, 'state/finance/probe')
   fs.mkdirSync(cwd, { recursive: true })
+  if (configDir) ensureClaudeOnboarded(configDir)
   const target = windowTarget(PROBE_SESSION, PROBE_WINDOW)
   try {
-    await openWindow(PROBE_SESSION, PROBE_WINDOW, cwd, 'claude --model haiku --strict-mcp-config')
+    await openWindow(PROBE_SESSION, PROBE_WINDOW, cwd, probeCommand(configDir))
     // /usage is a panel: at 50 rows its bottom ("Usage credits are on/off") is cut off.
     const { tmux } = await import('../lib/tmux.js')
     await tmux('resize-window', '-t', windowTarget(PROBE_SESSION, PROBE_WINDOW), '-y', '140').catch(() => {})
@@ -71,11 +86,11 @@ export async function runClaudeUsageProbe(root: string): Promise<ClaudeUsageLimi
 }
 
 /** Cache-aware accessor: reuses a fresh cache, otherwise runs the probe and refreshes it. */
-export async function getClaudeUsageLimits(root: string, cacheFile?: string): Promise<ClaudeUsageLimits | undefined> {
-  const file = cacheFile ?? path.join(root, 'state/finance/claude-usage.json')
+export async function getClaudeUsageLimits(root: string, cacheFile?: string, configDir?: string): Promise<ClaudeUsageLimits | undefined> {
+  const file = cacheFile ?? claudeUsageCacheFile(root)
   const cached = readUsageCache(file)
   if (isCacheFresh(cached)) return cached!.limits
-  const limits = await runClaudeUsageProbe(root)
+  const limits = await runClaudeUsageProbe(root, configDir)
   writeUsageCache(file, { timestamp: new Date().toISOString(), limits, error: limits ? undefined : 'probe failed or timed out' })
   return limits
 }

@@ -29,6 +29,8 @@ import { loadWatchdogState, runWatchdog, saveWatchdogState } from './watchdog.js
 import { collectFinanceSnapshot } from '../finance/collect.js'
 import { detectGroupAlerts, detectLimitAlerts, loadFinanceAlertState, saveFinanceAlertState } from '../finance/alerts.js'
 import { renderFinanceReport } from '../finance/render.js'
+import { suggestMoveText } from '../finance/groups.js'
+import { headroomFromSnapshot } from '../finance/headroom.js'
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 const HOURGLASS = 'hourglass_flowing_sand'
@@ -137,6 +139,18 @@ async function run() {
 
     const command = job.command!
     adminLog(`exec pid=${process.pid} cmd=${command.command} args=${JSON.stringify(command.args)} post=${post.id}`)
+
+    if (command.command === 'vault' && command.args[0] === 'set' && command.args.length > 1) {
+      // Looks like a key was pasted into chat: purge it (owner token: bots can't delete others' posts).
+      const purged = await new MattermostClient(config.mattermostUrl, secrets!.mattermost.adminToken).deletePost(post.id, true).then(() => true, () => false)
+      adminLog(`vault set with a value in chat post=${post.id} purged=${purged}`)
+      await mm.createPost({
+        channelId: channel.id,
+        message: `⚠️ That looked like an API key, so I ${purged ? 'permanently deleted your message' : 'tried to delete your message (failed: delete it yourself)'}. ` +
+          `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`office vault set ${command.args[1]}\` (input hidden).`,
+      }).catch(() => {})
+      return
+    }
 
     if (command.command === 'help') {
       await mm.createPost({ channelId: channel.id, message: helpText, rootId: post.rootId || post.id }).catch(() => {})
@@ -247,7 +261,7 @@ async function run() {
     let validated: { ok: true; proposal: HelperProposal } | { ok: false; error: string } | undefined
     for (let attempt = 0; attempt < 2; attempt++) {
       const fullPrompt = lastError ? `${prompt}\n\n[VALIDATION ERROR ON PREVIOUS ATTEMPT — FIX IT]: ${lastError}` : prompt
-      const result = runHelper({ root, helperModel: config.defaults.helperModel, prompt: fullPrompt, timeoutMs: 120_000 })
+      const result = runHelper({ root, helperModel: config.defaults.helperModel, prompt: fullPrompt, timeoutMs: 120_000, groups: config.resourceGroups })
       if (result.exitCode !== 0) {
         adminLog(`helper run failed exit=${result.exitCode} output=${result.output.slice(0, 200)}`)
         lastError = `helper process exited ${result.exitCode}`
@@ -600,10 +614,14 @@ async function run() {
     try {
       const snapshot = await collectFinanceSnapshot(root, config)
       const now = Date.now()
+      // Point an alert at a same-kind group with more headroom (`office group move`).
+      const usedPercent = headroomFromSnapshot(snapshot.limits, snapshot.groupsWeek)
+      const agentsByGroup = new Map(snapshot.groupsWeek.map((g) => [g.id, g.agents]))
+      const suggest = (id: string) => suggestMoveText(id, config.resourceGroups, usedPercent, agentsByGroup.get(id) ?? [])
       const thresholds = config.finance?.usageAlertThresholds ?? [75, 90, 100]
-      const alerts = detectGroupAlerts(snapshot.groupsToday, thresholds, financeState)
+      const alerts = detectGroupAlerts(snapshot.groupsToday, thresholds, financeState, suggest)
       const limitThresholds = config.finance?.limitAlertThresholds ?? [80, 95]
-      alerts.push(...detectLimitAlerts(snapshot.limits, limitThresholds, financeState))
+      alerts.push(...detectLimitAlerts(snapshot.limits, limitThresholds, financeState, suggest))
       for (const a of alerts) {
         await mm.createPost({ channelId: financeChannel.id, message: a.message }).catch(() => {})
       }

@@ -6,9 +6,12 @@ import os from 'node:os'
 import path from 'node:path'
 import type { TranscriptEntry } from './types.js'
 
-/** Root of the Claude Code project store (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects). */
-export function claudeProjectsDir(): string {
-  const root = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
+/**
+ * Root of the Claude Code project store. `configDir` wins when given; otherwise
+ * `$CLAUDE_CONFIG_DIR`, then `~/.claude` (today's behaviour).
+ */
+export function claudeProjectsDir(configDir?: string): string {
+  const root = configDir ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
   return path.join(root, 'projects')
 }
 
@@ -29,13 +32,13 @@ export function claudeProjectSlug(cwd: string): string {
 }
 
 /** Expected path of the session transcript for a cwd + session id. */
-export function claudeSessionFile(cwd: string, sessionId: string): string {
-  return path.join(claudeProjectsDir(), claudeProjectSlug(cwd), `${sessionId}.jsonl`)
+export function claudeSessionFile(cwd: string, sessionId: string, configDir?: string): string {
+  return path.join(claudeProjectsDir(configDir), claudeProjectSlug(cwd), `${sessionId}.jsonl`)
 }
 
 /** Find a session transcript by id anywhere under the projects dir (read-only scan). */
-export function findClaudeSessionFile(sessionId: string): string | undefined {
-  const root = claudeProjectsDir()
+export function findClaudeSessionFile(sessionId: string, configDir?: string): string | undefined {
+  const root = claudeProjectsDir(configDir)
   let projects: fs.Dirent[]
   try {
     projects = fs.readdirSync(root, { withFileTypes: true })
@@ -51,6 +54,25 @@ export function findClaudeSessionFile(sessionId: string): string | undefined {
     if (fs.existsSync(file)) return file
   }
   return undefined
+}
+
+/**
+ * Copy a session transcript (and its sibling subagent/tool-result directory, if any)
+ * from one config dir's project store into another's, under the destination cwd's
+ * slug. Used by `office group move` to bring a Claude agent's history along.
+ * Returns false when the source transcript isn't found; overwrites the destination.
+ */
+export function copyClaudeSession(opts: { sessionId: string; cwd: string; fromDir?: string; toDir?: string }): boolean {
+  const src = findClaudeSessionFile(opts.sessionId, opts.fromDir)
+  if (!src) return false
+  const dest = claudeSessionFile(opts.cwd, opts.sessionId, opts.toDir)
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  fs.copyFileSync(src, dest)
+  const srcSidecar = path.join(path.dirname(src), opts.sessionId)
+  if (fs.existsSync(srcSidecar)) {
+    fs.cpSync(srcSidecar, path.join(path.dirname(dest), opts.sessionId), { recursive: true })
+  }
+  return true
 }
 
 // ---------------------------------------------------------------- JSONL parsing

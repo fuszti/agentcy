@@ -3,9 +3,11 @@
 // Channels are blocked by our org policy, so events are pasted into the TUI,
 // but only when hooks report the session idle (never into an open dialog).
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { AgentRecord, AgentStatus, WakeAdapter } from '../types.js'
 import { capturePane, paneAlive, pasteAndSubmit, windowTarget } from '../tmux.js'
+import { claudeProjectsDir } from '../transcript.js'
 
 /** Pane text that means Claude is mid-turn: the spinner line, e.g. "* Ruminating… (7s · ↓ 496 tokens · thinking)". */
 const BUSY_PATTERNS = [/esc to interrupt/, /…\s*\((\d+m\s*)?\d+s\s*·/]
@@ -83,6 +85,8 @@ export interface ClaudeLaunch {
   mode: { kind: 'new'; sessionId: string } | { kind: 'resume'; sessionId: string } | { kind: 'fork'; parentSessionId: string; sessionId: string }
   /** Env-var assignments to prefix to the shell command (git identity, etc.). */
   envPrefix?: string
+  /** Per-group Claude config dir (abs path). Set as CLAUDE_CONFIG_DIR on the harness command's env. */
+  configDir?: string
 }
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -98,13 +102,70 @@ export function claudeLaunchCommand(l: ClaudeLaunch): string {
     '--add-dir', path.join(l.root, 'brain'))
   if (l.agent.chrome) args.push('--chrome')
   // Env assignments must sit on the harness command itself: `A=b cd x && exec y` would give them to `cd` only.
-  const env = l.envPrefix ? `env ${l.envPrefix}` : ''
+  const configDirEnv = l.configDir ? `CLAUDE_CONFIG_DIR=${q(l.configDir)} ` : ''
+  const envAssignments = `${configDirEnv}${l.envPrefix ?? ''}`
+  const env = envAssignments ? `env ${envAssignments}` : ''
   return `cd ${q(l.workspace)} && exec ${env}${args.map(a => (a.startsWith('--') || /^[\w./:-]+$/.test(a) ? a : q(a))).join(' ')}`
 }
 
+/** UI-hint keys `ensureClaudeOnboarded` may copy — never account, identity, project or key data. */
+export const COPIED_ONBOARDING_KEYS = [
+  'theme', 'lastOnboardingVersion', 'lastReleaseNotesSeen', 'hasSeenAutoModeOutsideReadPrompt',
+  'hasCompletedClaudeInChromeOnboarding',
+]
+
+/**
+ * A fresh CLAUDE_CONFIG_DIR shows Claude Code's first-run theme picker on its next launch, which
+ * blocks a tmux-driven agent (nothing types the answer) and the `/usage` probe (it never sees a
+ * ready prompt). Seed `<configDir>/.claude.json` with `hasCompletedOnboarding: true`, plus a copy
+ * of a few harmless UI-hint keys from the operator's own config for any not already set locally,
+ * so the group looks and behaves like an already-onboarded install. Never touches account,
+ * credential or project data. Leaves a corrupt target file untouched. Writes only when something
+ * actually changes (atomic temp+rename, mode 0600) and returns whether it wrote.
+ */
+export function ensureClaudeOnboarded(configDir: string, sourceConfigFile?: string): boolean {
+  fs.mkdirSync(configDir, { recursive: true })
+  const target = path.join(configDir, '.claude.json')
+
+  let existing: Record<string, unknown> = {}
+  if (fs.existsSync(target)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(target, 'utf8')) as Record<string, unknown>
+    } catch {
+      return false // corrupt target: don't touch it
+    }
+  }
+
+  const srcFile = sourceConfigFile ?? (process.env.CLAUDE_CONFIG_DIR
+    ? path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
+    : path.join(os.homedir(), '.claude.json'))
+  let source: Record<string, unknown> = {}
+  try {
+    source = JSON.parse(fs.readFileSync(srcFile, 'utf8')) as Record<string, unknown>
+  } catch {
+    // missing or corrupt source: nothing to copy, just set the onboarding flag below
+  }
+
+  let changed = existing.hasCompletedOnboarding !== true
+  const next: Record<string, unknown> = { ...existing, hasCompletedOnboarding: true }
+  for (const key of COPIED_ONBOARDING_KEYS) {
+    if (!(key in existing) && key in source) {
+      next[key] = source[key]
+      changed = true
+    }
+  }
+  if (!changed) return false
+
+  const tmp = `${target}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(next))
+  fs.chmodSync(tmp, 0o600)
+  fs.renameSync(tmp, target)
+  return true
+}
+
 /** Does Claude Code already have a transcript for this session id (any project)? */
-export function claudeSessionExists(sessionId: string): boolean {
-  const base = path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME ?? '', '.claude'), 'projects')
+export function claudeSessionExists(sessionId: string, configDir?: string): boolean {
+  const base = claudeProjectsDir(configDir)
   try {
     return fs.readdirSync(base).some(d => fs.existsSync(path.join(base, d, `${sessionId}.jsonl`)))
   } catch { return false }

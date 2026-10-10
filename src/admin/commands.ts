@@ -25,6 +25,8 @@ export const allowedCommands = new Set([
   'peek',
   'activity',
   'finance',
+  'vault',
+  'group',
 ])
 
 export interface ParsedCommand {
@@ -166,6 +168,11 @@ Available office commands (prefix with \`office \` or \`!\`):
   - \`project list\`
   - \`project staff <name> [--add a,b] [--remove c]\`
   - \`project archive <name>\`
+- **vault** — provider API key status (keys are set on the server shell, never in chat)
+  - \`vault\`, \`vault check\`
+- **group** — resource groups (Claude subscriptions, OpenCode Go / OpenRouter keys)
+  - \`group\`, \`group add <kind> --id X [--label L]\`, \`group rm <id>\`, \`group move <agent> <id>\`
+  - \`group login <id>\` only works on the office server's own shell, not from chat
 - **generate** — describe what you want in plain words and get the matching office command(s)
   - \`generate <text>\`, \`gen <text>\`, \`? <text>\`
 `.trim()

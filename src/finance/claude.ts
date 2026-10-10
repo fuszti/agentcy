@@ -40,9 +40,10 @@ export function parseClaudeAuthStatus(json: string): ClaudeAccountInfo | undefin
 }
 
 /** Run `claude auth status --json` and parse it. Returns undefined on any failure. */
-export function readClaudeAccountInfo(): ClaudeAccountInfo | undefined {
+export function readClaudeAccountInfo(configDir?: string): ClaudeAccountInfo | undefined {
   try {
-    const out = execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
+    const env = configDir ? { ...process.env, CLAUDE_CONFIG_DIR: configDir } : process.env
+    const out = execFileSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000, env })
     return parseClaudeAuthStatus(out)
   } catch {
     return undefined
@@ -110,14 +111,23 @@ export function parseClaudeTokenUsage(jsonl: string, agent: string): ClaudeToken
   return [...byKey.values()]
 }
 
-/** Read and parse token usage for one agent's current + past Claude sessions. Tolerates missing files. */
-export function readAgentClaudeTokenUsage(agent: string, sessionIds: string[]): ClaudeTokenUsage[] {
+/**
+ * Read and parse token usage for one agent's current + past Claude sessions. Tolerates
+ * missing files. Searches each config dir in order (undefined = env/default dir) and
+ * uses the first hit per session id — e.g. after `office group move`, a session copied
+ * into a new group's dir shouldn't be double-counted from the old one.
+ */
+export function readAgentClaudeTokenUsage(agent: string, sessionIds: string[], configDirs: (string | undefined)[] = [undefined]): ClaudeTokenUsage[] {
   const out: ClaudeTokenUsage[] = []
   const seen = new Set<string>()
   for (const id of sessionIds) {
     if (!id || seen.has(id)) continue
     seen.add(id)
-    const file = findClaudeSessionFile(id)
+    let file: string | undefined
+    for (const dir of configDirs) {
+      file = findClaudeSessionFile(id, dir)
+      if (file) break
+    }
     if (!file) continue
     try {
       const jsonl = fs.readFileSync(file, 'utf8')

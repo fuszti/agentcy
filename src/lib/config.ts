@@ -45,6 +45,11 @@ export async function loadConfig(): Promise<OfficeConfig> {
   return JSON.parse(raw) as OfficeConfig
 }
 
+/** Write the local office.config.json (used by `office setup`). */
+export async function saveConfig(cfg: OfficeConfig): Promise<void> {
+  await writeJsonAtomic(path.join(repoRoot(), CONFIG_NAME), cfg)
+}
+
 /** Directory for runtime state (gitignored). */
 export function stateDir(): string {
   return path.join(repoRoot(), 'state')
