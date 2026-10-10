@@ -121,7 +121,7 @@ export class MattermostClient {
     return (await res.json()) as T
   }
 
-  async me(): Promise<{ id: string; username: string; email: string; roles: string }> {
+  async me(): Promise<{ id: string; username: string; email: string; roles: string; create_at?: number }> {
     return this.request('GET', '/users/me')
   }
 
@@ -521,6 +521,7 @@ export class MattermostClient {
       message: raw.message,
       rootId: raw.root_id || undefined,
       createAt: raw.create_at,
+      type: raw.type || undefined,
       files,
     }
   }
@@ -553,6 +554,7 @@ interface RawPost {
   message: string
   root_id: string
   create_at: number
+  type?: string
   file_ids?: string[]
   metadata?: { files?: RawFileInfo[] }
 }

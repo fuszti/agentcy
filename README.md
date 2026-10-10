@@ -244,6 +244,7 @@ ticket's project channel (or `#office`) to wake it up, at most once per ticket p
 | `office vault [status\|set <id>\|rm <id>\|check\|import-opencode]` | Encrypted provider API keys, injected into agents as env vars. `set` prompts with hidden input and works only in a terminal. |
 | `office export [dir]` / `office import <dir> [--force]` | Move the whole office to another machine. Agents continue in fresh sessions. |
 | `office shutdown` | Stop all agent sessions and the admin daemon; the stack keeps running. Used by the systemd service. |
+| `office dev init [--name n] [--port-base N]` / `dev info` / `dev down [--purge]` / `dev reset` | Isolated dev office for this checkout: own containers, ports, volumes and tmux session. See [Developing Agentcy](#developing-agentcy). |
 | `office init` | Bring up infra and create the owner, team, default channels (`#office`, `#ag-lobby`), the Forgejo org, `office/tasks` with status/kind labels, and `brain/`. Idempotent. |
 | `office hire <name> [--harness claude\|opencode] [--model M] [--focus "…"] [--chrome]` | Create a Mattermost bot, a Forgejo user and a brain folder, then start the agent's desk session. |
 | `office start\|stop\|restart [names…]` | Manage sessions. `start` resumes the same session id, so the agent keeps its context. `start` also ensures the admin daemon is running. |
@@ -349,12 +350,40 @@ state/            (gitignored) secrets, agent records, status, inboxes, logs
 ## Tests
 
 ```bash
-npx tsc --noEmit                                          # type check
-npx vitest run                                            # unit tests (policy, transcripts, opencode client)
-OFFICE_INTEGRATION=1 npx vitest run test/integration      # against the live stack
+npm run check                  # type check + lint + unit tests (what CI runs)
+npx vitest run                 # unit tests only
+npm run test:integration       # against this checkout's dev office (bin/office dev init first)
+npm run test:e2e               # hire an opencode agent on a cheap model, DM it, wait for a reply
 OPENCODE_LIVE=1 npx vitest run test/opencode.test.ts      # against a real opencode server (cheap model)
 npx tsx scripts/check-history-limit.ts                    # proves no 10k-message cap on Team Edition
 ```
+
+Integration and e2e tests refuse to run unless the checkout is a dev office. They never touch a
+normal office. The e2e test uses `OPENCODE_GO_API_KEY` if it is set, otherwise the machine's own
+opencode login.
+
+## Developing Agentcy
+
+Work on Agentcy against a dev office, not your live one. A dev office is a second, isolated
+instance of the stack for one checkout:
+
+```bash
+bin/office dev init      # create or reuse this checkout's dev office, then run the normal init
+bin/office dev info      # name, compose project, URLs, tmux session
+bin/office dev down      # stop it; add --purge to delete its volumes and local state
+bin/office dev reset     # purge and init again with the same name
+```
+
+- Every git worktree or clone gets its own instance: its own compose project, container names,
+  ports, named volumes (no `infra/data`) and tmux session. Several can run side by side, and next
+  to a live office.
+- The guard refuses to clobber another checkout's stack. If containers of the same name belong to
+  a different checkout, commands that change the stack stop and tell you to run `office dev init`.
+  `dev init` refuses in a checkout that already holds a normal office. `dev down` and `dev reset`
+  refuse on anything but a dev instance. `export`, `import` and `setup` refuse on a dev instance.
+- On a fresh clone or in a cloud coding session, run `npm ci`, then `bin/office dev init` if
+  Docker is available. Without Docker, run the unit tests only (`npm run check` needs no stack).
+- Coding agents: see [`CLAUDE.md`](CLAUDE.md) and `.claude/skills/`.
 
 ## Security & safety
 

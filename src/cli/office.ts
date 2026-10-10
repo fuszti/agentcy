@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import net from 'node:net'
 import type { AgentRecord, Harness } from '../lib/types.js'
 import { agentStateDir, listAgents, loadAgent, loadConfig, loadSecrets, repoRoot, saveAgent, saveConfig, stateDir } from '../lib/config.js'
 import { bootstrap, createAgentIdentity, retireAgentIdentity } from './bootstrap.js'
@@ -13,10 +15,11 @@ import { isProjectMember, listProjects, loadProject, saveProject, validateProjec
 import { claudeLaunchCommand, claudeMcpConfig, claudeSessionExists, claudeSettings, ensureClaudeOnboarded, readStatus, settleClaudeStartup, writeStatus } from '../lib/harness/claude.js'
 import { OpencodeClient, buildOpencodeConfig, forkOpencodeSession, opencodeLaunchCommand, opencodeTranscript } from '../lib/harness/opencode.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
-import { composeFileArgs } from '../lib/infra.js'
+import { assertInitialised, assertInstanceConfig, assertNotDevInstance, assertStackOwnership, composeEnv, composeFileArgs } from '../lib/infra.js'
 import { MOVED_PROMPT, exportOffice, importOffice } from '../lib/migrate.js'
 import { cmdVault } from './vault-cmd.js'
 import { runSetup } from './setup.js'
+import { cmdDev, type DevDeps } from './dev-cmd.js'
 import { opencodeProviderOverrides, vaultEnvDefaults, vaultEnvForAgent, withEnvFile, writeAgentEnvFile } from '../lib/vault.js'
 import { findClaudeSessionFile, readClaudeTranscript, renderTranscript } from '../lib/transcript.js'
 import { capturePane, killWindow, openWindow, paneAlive, windowExists, windowTarget } from '../lib/tmux.js'
@@ -99,7 +102,8 @@ async function nextOpencodePort(): Promise<number> {
 }
 
 async function ensureInfra() {
-  const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit' })
+  assertStackOwnership(root)
+  const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit', env: composeEnv() })
   if (r.status !== 0) throw new Error('docker compose up failed')
 }
 
@@ -204,6 +208,9 @@ async function shutdownOffice(): Promise<void> {
 }
 
 async function cmdExport(pos: string[]) {
+  assertNotDevInstance(root, 'export')
+  assertInitialised(root, 'export')
+  assertStackOwnership(root)
   const out = path.resolve(pos[0] ?? `agentcy-export-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`)
   console.log('stopping agents, admin daemon and the chat/tickets stack for a consistent copy…')
   await shutdownOffice()
@@ -219,6 +226,7 @@ This office is left stopped. Don't start it again here, or you'll have two offic
 
 async function cmdImport(pos: string[], flags: Record<string, string | boolean>) {
   if (!pos[0]) throw new Error('usage: office import <export-dir> [--force]   (office setup --import <dir> also sets up access/keys)')
+  assertNotDevInstance(root, 'import')
   const { moved } = importOffice(root, path.resolve(pos[0]), { force: flags.force === true })
   for (const name of moved) await queueSystemPrompt(root, name, 'moved', MOVED_PROMPT)
   console.log(`imported; ${moved.length} agent(s) start fresh sessions from their brains. Next: office init (re-checks the stack), then office start`)
@@ -723,14 +731,39 @@ async function cmdProjectArchive(pos: string[]) {
   console.log(`project ${name} archived (repo ${p.repo})`)
 }
 
+/** Collaborators of `office dev`; dev-cmd.ts cannot import this file (it runs main() on import). */
+const devDeps: DevDeps = {
+  root,
+  bootstrap,
+  ensureBrain: () => ensureBrain(root),
+  shutdownOffice,
+  run: (cmd, args, capture) => {
+    const r = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit', env: composeEnv() })
+    return { status: r.status ?? 1, stdout: r.stdout ?? '' }
+  },
+  portFree: (port) => new Promise(resolve => {
+    const srv = net.createServer()
+    srv.once('error', () => resolve(false))
+    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)))
+  }),
+  assertOwnership: () => assertStackOwnership(root),
+  randomPassword: () => randomBytes(24).toString('base64url'),
+  log: console.log,
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2)
   const { pos, flags } = parseArgs(rest)
+  // Everything except `dev init` (which repairs it) must see a config that matches this checkout's dev instance,
+  // else a regenerated default config would make a dev checkout act on the live tmux session "office".
+  // `dev reset` is not exempt: it shuts the office down through cfg.tmuxSession before it re-inits.
+  if (!(cmd === 'dev' && pos[0] === 'init')) assertInstanceConfig(root, cfg)
   const targets = async () => (flags.all === true || !pos.length ? (await allAgents()).filter(a => a.status === 'hired') : await Promise.all(pos.map(n => agent(slug(n)))))
   switch (cmd) {
     case 'init': await bootstrap(); ensureBrain(root); console.log('office initialised'); break
     case 'up': await ensureInfra(); break
     case 'setup': await runSetup(root, flags); break
+    case 'dev': await cmdDev(pos, flags, devDeps); break
     case 'vault': await cmdVault(root, cfg.resourceGroups, pos); break
     case 'group': {
       const deps: GroupDeps = {
@@ -753,7 +786,7 @@ async function main() {
     }
     case 'export': await cmdExport(pos); break
     case 'import': await cmdImport(pos, flags); break
-    case 'shutdown': await shutdownOffice(); break
+    case 'shutdown': assertInitialised(root, 'shutdown'); await shutdownOffice(); break
     case 'hire': await cmdHire(pos, flags); break
     case 'start': await ensureInfra(); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
     case 'stop': for (const a of await targets()) await stopAgent(a); break
@@ -764,7 +797,7 @@ async function main() {
     case 'activity': await cmdActivity(pos, flags); break
     case 'finance': await cmdFinance(pos); break
     case 'admin': await runAdminDaemon(); break
-    case 'admin-stop': await stopAdminDaemon(); break
+    case 'admin-stop': assertInitialised(root, 'admin-stop'); await stopAdminDaemon(); break
     case 'attach': execFileSync('tmux', ['attach', '-t', pos[0] ? windowTarget(cfg.tmuxSession, pos[0]) : cfg.tmuxSession], { stdio: 'inherit' }); break
     case 'fork': await cmdFork(pos, flags); break
     case 'merge': await cmdMerge(pos, flags); break
@@ -808,8 +841,12 @@ async function main() {
     default:
       console.log(`office <command>
   setup [--import dir] [--force]  guided first run / reconfigure: owner, access address, API keys, Claude login
+  dev init [--name n] [--port-base N]  isolated dev office for this checkout (own containers, ports, volumes, tmux session); runs init
+  dev info                     name, compose project, URLs and tmux session of this checkout's dev office
+  dev down [--purge]           stop the dev office; --purge also deletes its volumes, state, brain, workspaces, config
+  dev reset                    dev down --purge, then dev init with the same name
   init                         bring up Mattermost + Forgejo, create owner, team, channels, brain
-  up                           docker compose up -d
+  up                           docker compose up -d (refuses when the containers belong to another checkout)
   hire <name> [--harness claude|opencode] [--model M] [--focus "..."] [--display N] [--chrome] [--group <id|auto>] [--no-start]
   start|stop|restart [names…]  manage agent sessions (tmux session "${cfg.tmuxSession}")
   admin                        run the #office-admin chat-ops daemon in the foreground

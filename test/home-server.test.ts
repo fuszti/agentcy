@@ -37,12 +37,12 @@ describe('access modes', () => {
   it('LAN mode writes the override (picked up by compose) and env; other modes remove it', () => {
     fs.writeFileSync(path.join(root, 'infra', '.env'), 'POSTGRES_PASSWORD=p\n')
     applyAccessMode(root, { kind: 'lan', addr: '10.0.0.7' })
-    expect(composeFileArgs(root)).toHaveLength(4)
+    expect(composeFileArgs(root)).toHaveLength(6)
     const env = parseEnv(fs.readFileSync(path.join(root, 'infra', '.env'), 'utf8'))
     expect(env).toEqual({ POSTGRES_PASSWORD: 'p', MM_SITE_URL: 'http://10.0.0.7:8065', FORGEJO_ROOT_URL: 'http://10.0.0.7:3033/' })
     expect(fs.statSync(path.join(root, 'infra', '.env')).mode & 0o777).toBe(0o600)
     applyAccessMode(root, { kind: 'tailscale', dnsName: 'nas.ts.net' })
-    expect(composeFileArgs(root)).toHaveLength(2)
+    expect(composeFileArgs(root)).toHaveLength(4)
   })
 })
 

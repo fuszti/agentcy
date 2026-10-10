@@ -263,6 +263,8 @@ export interface ChatPost {
   message: string
   rootId?: string
   createAt: number
+  /** Mattermost post type: absent for normal posts, "system_*" for system messages (joins, adds, header changes). */
+  type?: string
   /** Files attached to the post, if any. */
   files?: ChatFile[]
 }

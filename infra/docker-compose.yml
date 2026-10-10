@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: agent-office-postgres
+    container_name: ${OFFICE_CONTAINER_PREFIX:-agent-office}-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: mmuser
@@ -19,14 +19,14 @@ services:
 
   mattermost:
     image: mattermost/mattermost-team-edition:11.11.1
-    container_name: agent-office-mattermost
+    container_name: ${OFFICE_CONTAINER_PREFIX:-agent-office}-mattermost
     user: "0:0"
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "${BIND_ADDR:-127.0.0.1}:8065:8065"
+      - "${BIND_ADDR:-127.0.0.1}:${MM_PORT:-8065}:8065"
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:${POSTGRES_PASSWORD}@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
@@ -64,11 +64,11 @@ services:
 
   forgejo:
     image: codeberg.org/forgejo/forgejo:16.0.5
-    container_name: agent-office-forgejo
+    container_name: ${OFFICE_CONTAINER_PREFIX:-agent-office}-forgejo
     restart: unless-stopped
     ports:
-      - "${BIND_ADDR:-127.0.0.1}:3033:3000"
-      - "${BIND_ADDR:-127.0.0.1}:2222:22"
+      - "${BIND_ADDR:-127.0.0.1}:${FORGEJO_PORT:-3033}:3000"
+      - "${BIND_ADDR:-127.0.0.1}:${FORGEJO_SSH_PORT:-2222}:22"
     environment:
       USER_UID: 1000
       USER_GID: 1000
@@ -97,4 +97,4 @@ services:
 
 networks:
   agent-office:
-    name: agent-office
+    name: ${OFFICE_CONTAINER_PREFIX:-agent-office}

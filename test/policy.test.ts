@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatPost, InboundEvent } from '../src/lib/types.js'
 import type { AgentContext } from '../src/mcp/policy.js'
 import {
+  firstCatchUpCursor,
   DeliveryQueue,
   PostGuard,
   channelTypeOf,
@@ -556,5 +557,30 @@ describe('PostGuard', () => {
     expect(g.check({ text: 'x', channelType: 'dm', threadAuthors: agents(3) })).toMatchObject({ ok: false })
     expect(g.check({ text: 'x', channelType: 'agent-only', threadAuthors: agents(4) })).toEqual({ ok: true })
     expect(g.check({ text: 'x', channelType: 'agent-only', threadAuthors: agents(5) })).toMatchObject({ ok: false })
+  })
+})
+
+describe('firstCatchUpCursor', () => {
+  const now = Date.parse('2026-10-10T12:00:00Z')
+
+  it('starts a new agent at the moment its chat account was created, so a DM sent before its listener was up is replayed', () => {
+    const created = now - 15_000
+    expect(firstCatchUpCursor(created, '2026-10-10T11:59:50Z', now)).toBe(created)
+  })
+
+  it('falls back to the agent record, then to now', () => {
+    expect(firstCatchUpCursor(undefined, '2026-10-10T11:59:50Z', now)).toBe(Date.parse('2026-10-10T11:59:50Z'))
+    expect(firstCatchUpCursor(undefined, undefined, now)).toBe(now)
+    expect(firstCatchUpCursor(0, 'not a date', now)).toBe(now)
+  })
+
+  it('never returns a time in the future', () => {
+    expect(firstCatchUpCursor(now + 60_000, undefined, now)).toBe(now)
+  })
+})
+
+describe('system posts carry their type on the post itself', () => {
+  it('drops "owner added @x to the channel" whether it arrives live or through catch-up (no postType in meta)', () => {
+    expect(classifyPost(ctx(), post({ message: 'owner added @kim to the channel.', type: 'system_add_to_channel' }), meta())).toBeNull()
   })
 })

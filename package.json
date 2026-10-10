@@ -30,7 +30,15 @@
     "office": "tsx src/cli/office.ts",
     "mcp": "tsx src/mcp/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "tsc --noEmit && biome lint . && vitest run",
+    "lint": "biome lint .",
+    "dev:init": "tsx src/cli/office.ts dev init",
+    "dev:info": "tsx src/cli/office.ts dev info",
+    "dev:down": "tsx src/cli/office.ts dev down",
+    "dev:reset": "tsx src/cli/office.ts dev reset",
+    "test:integration": "OFFICE_INTEGRATION=1 vitest run test/integration",
+    "test:e2e": "OFFICE_E2E=1 vitest run test/e2e"
   },
   "engines": {
     "node": ">=20"
@@ -42,6 +50,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/node": "^20.19.43",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.15",

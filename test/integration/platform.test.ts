@@ -4,6 +4,7 @@ import { loadConfig, loadSecrets } from '../../src/lib/config.js'
 import { MattermostClient } from '../../src/lib/mattermost.js'
 import { ForgejoClient } from '../../src/lib/forgejo.js'
 import type { ChatPost } from '../../src/lib/types.js'
+import { requireDevInstance } from '../helpers/dev-instance.js'
 
 describe.skipIf(!process.env.OFFICE_INTEGRATION)('platform integration', () => {
   let mmAdmin: MattermostClient
@@ -16,6 +17,7 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('platform integration', () => {
   let bFj: ForgejoClient
 
   beforeAll(async () => {
+    requireDevInstance()
     await bootstrap()
     config = await loadConfig()
     secrets = await loadSecrets()

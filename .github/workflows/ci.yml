@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: [20, 22]
@@ -26,5 +34,134 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests
         run: npx vitest run
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bring up the dev office
+        run: bin/office dev init --name ci
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Dump container logs
+        if: failure()
+        run: |
+          docker ps -a
+          for c in $(docker ps -a --format '{{.Names}}' | grep '^agentcy-'); do
+            echo "::group::$c"
+            docker logs --tail 200 "$c" 2>&1 || true
+            echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        # nothing to remove when init failed before it created the instance
+        run: if bin/office dev info >/dev/null 2>&1; then bin/office dev down --purge; fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Only whether the secret exists; the key itself is passed to the test step alone.
+      HAS_KEY: ${{ secrets.OPENCODE_GO_API_KEY != '' }}
+    steps:
+      - name: Skip notice
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::OPENCODE_GO_API_KEY secret is not set (forks, or not configured), end-to-end test skipped"
+
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          fetch-depth: 0
+
+      # The test spends model tokens, so it runs only when src/, infra/ or test/ changed.
+      - name: Check changed paths
+        if: env.HAS_KEY == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # a pull request is checked out as its merge commit, whose first parent is the base
+          if [ "$EVENT" = pull_request ]; then base=HEAD^1; else base=$BEFORE; fi
+          if ! changed=$(git diff --name-only "$base" HEAD); then
+            echo "::notice::could not list changed files, running the end-to-end test"
+            echo "RUN_E2E=true" >> "$GITHUB_ENV"
+          elif echo "$changed" | grep -qE '^(src|infra|test)/'; then
+            echo "RUN_E2E=true" >> "$GITHUB_ENV"
+          else
+            echo "::notice::no change under src/, infra/ or test/, end-to-end test skipped"
+          fi
+
+      - name: Use Node.js 22
+        if: env.RUN_E2E == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install tmux and opencode
+        if: env.RUN_E2E == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          npm i -g opencode-ai@1.18.35
+
+      - name: Install dependencies
+        if: env.RUN_E2E == 'true'
+        run: npm ci
+
+      - name: Bring up the dev office
+        if: env.RUN_E2E == 'true'
+        run: bin/office dev init --name ci
+
+      - name: End-to-end test
+        if: env.RUN_E2E == 'true'
+        env:
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+        run: npm run test:e2e
+
+      - name: Dump diagnostics
+        if: failure() && env.RUN_E2E == 'true'
+        run: |
+          docker ps -a
+          for c in $(docker ps -a --format '{{.Names}}' | grep '^agentcy-'); do
+            echo "::group::$c"
+            docker logs --tail 200 "$c" 2>&1 || true
+            echo "::endgroup::"
+          done
+          for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^office-'); do
+            for w in $(tmux list-windows -t "$s" -F '#{window_name}' 2>/dev/null); do
+              echo "::group::tmux $s:$w"
+              tmux capture-pane -p -t "$s:$w" -S -200 2>&1 || true
+              echo "::endgroup::"
+            done
+          done
+          for f in state/agents/*/mcp.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            tail -n 200 "$f" || true
+            echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always() && env.RUN_E2E == 'true'
+        # nothing to remove when init failed before it created the instance
+        run: if bin/office dev info >/dev/null 2>&1; then bin/office dev down --purge; fi

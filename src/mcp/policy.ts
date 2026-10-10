@@ -57,7 +57,7 @@ export function classifyPost(
   if (post.userId === ctx.userId || post.username === ctx.username) return null
   const text = post.message ?? ''
   const hasFiles = (post.files?.length ?? 0) > 0
-  if ((text.trim() === '' && !hasFiles) || (meta.postType ?? '').startsWith('system_')) return null
+  if ((text.trim() === '' && !hasFiles) || (meta.postType ?? post.type ?? '').startsWith('system_')) return null
 
   const fromHuman = ctx.humanUsernames.includes(post.username)
   const fromSystem = ctx.systemUsernames?.includes(post.username) ?? false
@@ -511,4 +511,15 @@ export class PostGuard {
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Where a brand-new agent's first catch-up starts. Its chat account exists before its office-mcp
+ * is listening (hire returns first), and a DM or mention sent in that gap is otherwise never
+ * delivered. Posts older than the account cannot have been addressed to it.
+ */
+export function firstCatchUpCursor(accountCreatedAt: number | undefined, recordCreatedAt: string | undefined, now: number): number {
+  const fromRecord = recordCreatedAt ? Date.parse(recordCreatedAt) : NaN
+  const at = accountCreatedAt || fromRecord
+  return Number.isFinite(at) && at > 0 && at <= now ? at : now
 }

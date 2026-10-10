@@ -10,7 +10,7 @@ import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgen
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { OfficeSecrets, ChatChannel } from '../lib/types.js'
-import { composeFileArgs, writeInfraEnv } from '../lib/infra.js'
+import { assertStackOwnership, composeEnv, composeFileArgs, writeInfraEnv } from '../lib/infra.js'
 
 const INFRA_DIR = path.join(repoRoot(), 'infra')
 const ENV_PATH = path.join(INFRA_DIR, '.env')
@@ -23,6 +23,7 @@ function dockerCompose(args: string[], options?: { capture?: boolean; quiet?: bo
   return new Promise((resolve, reject) => {
     const cp = spawn('docker', ['compose', ...composeFileArgs(repoRoot()), ...args], {
       stdio: options?.capture ? ['ignore', 'pipe', 'pipe'] : options?.quiet ? ['ignore', 'ignore', 'ignore'] : 'inherit',
+      env: composeEnv(),
     })
     let out = ''
     let err = ''
@@ -36,20 +37,22 @@ function dockerCompose(args: string[], options?: { capture?: boolean; quiet?: bo
   })
 }
 
-function dockerExec(container: string, user: string | undefined, command: string[], capture = true): Promise<string> {
+/** Through compose, not by container name, so it hits this checkout's stack (live or dev) only. */
+function dockerExec(service: 'mattermost' | 'forgejo', user: string | undefined, command: string[], capture = true): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = ['exec']
+    const args = ['compose', ...composeFileArgs(repoRoot()), 'exec', '-T']
     if (user) args.push('-u', user)
-    args.push(container, ...command)
+    args.push(service, ...command)
     const cp = spawn('docker', args, {
       stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      env: composeEnv(),
     })
     let out = ''
     let err = ''
     if (cp.stdout) cp.stdout.on('data', (d) => (out += d.toString()))
     if (cp.stderr) cp.stderr.on('data', (d) => (err += d.toString()))
     cp.on('close', (code) => {
-      if (code !== 0) reject(new Error(`docker exec ${container} ${command.join(' ')} failed: ${err || out}`))
+      if (code !== 0) reject(new Error(`docker compose exec ${service} ${command.join(' ')} failed: ${err || out}`))
       else resolve(out)
     })
     cp.on('error', reject)
@@ -79,13 +82,27 @@ async function readEnv(): Promise<Record<string, string>> {
   return out
 }
 
+/**
+ * fetch with a deadline held by a normal (ref'd) timer. While a container is still starting, a
+ * request can stall with nothing left on the event loop, and Node then exits 0 in the middle of
+ * bootstrap. The timer keeps the process alive and turns the stall into a retry.
+ */
+async function probe<T>(url: string, read: (res: Response) => Promise<T>, ms = 5000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer from ${url} in ${ms}ms`)), ms) })
+  try {
+    return await Promise.race([fetch(url).then(read), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function waitForMattermost(baseUrl: string, timeoutMs = 120000): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${baseUrl}/api/v4/system/ping?get_server_status=true`)
-      const json = (await res.json()) as { status?: string }
-      if (res.ok && json.status === 'OK') return
+      const ok = await probe(`${baseUrl}/api/v4/system/ping?get_server_status=true`, async (res) => res.ok && ((await res.json()) as { status?: string }).status === 'OK')
+      if (ok) return
     } catch {
       // ignore
     }
@@ -98,13 +115,11 @@ async function waitForForgejo(baseUrl: string, timeoutMs = 120000): Promise<void
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${baseUrl}/api/forgejo/v1/version`)
-      if (res.ok) return
+      if (await probe(`${baseUrl}/api/forgejo/v1/version`, async (res) => res.ok)) return
     } catch {
       // try fallback endpoint
       try {
-        const res2 = await fetch(`${baseUrl}/api/v1/version`)
-        if (res2.ok) return
+        if (await probe(`${baseUrl}/api/v1/version`, async (res) => res.ok)) return
       } catch {
         // ignore
       }
@@ -122,9 +137,9 @@ async function ensureMattermostHuman(config: Awaited<ReturnType<typeof loadConfi
   // Check whether user already exists via mmctl local.
   let userId: string | undefined
   try {
-    await dockerExec('agent-office-mattermost', undefined, ['mmctl', '--local', 'user', 'search', username], true)
+    await dockerExec('mattermost', undefined, ['mmctl', '--local', 'user', 'search', username], true)
     const existing = await dockerExec(
-      'agent-office-mattermost',
+      'mattermost',
       undefined,
       ['mmctl', '--local', 'user', 'search', '--json', username],
       true,
@@ -137,14 +152,14 @@ async function ensureMattermostHuman(config: Awaited<ReturnType<typeof loadConfi
 
   if (!userId) {
     await dockerExec(
-      'agent-office-mattermost',
+      'mattermost',
       undefined,
       ['mmctl', '--local', 'user', 'create', '--email', email, '--username', username, '--password', password, '--system-admin', '--email-verified'],
       true,
     )
 
     const out = await dockerExec(
-      'agent-office-mattermost',
+      'mattermost',
       undefined,
       ['mmctl', '--local', 'user', 'search', '--json', username],
       true,
@@ -156,7 +171,7 @@ async function ensureMattermostHuman(config: Awaited<ReturnType<typeof loadConfi
 
   // Always set the password to the one we will store.
   await dockerExec(
-    'agent-office-mattermost',
+    'mattermost',
     undefined,
     ['mmctl', '--local', 'user', 'change-password', username, '--password', password],
     true,
@@ -340,7 +355,7 @@ async function ensureForgejoAdmin(
   // Check if admin user exists by trying to create it.
   try {
     await dockerExec(
-      'agent-office-forgejo',
+      'forgejo',
       'git',
       ['forgejo', 'admin', 'user', 'create', '--admin', '--username', username, '--email', email, '--password', password, '--must-change-password=false'],
       true,
@@ -407,6 +422,7 @@ async function ensureForgejoOrgAndRepo(
 
 /** Idempotent bootstrap of the whole local office. */
 export async function bootstrap(): Promise<void> {
+  assertStackOwnership(repoRoot())
   await ensureInfraEnv()
   await dockerCompose(['up', '-d'], { quiet: true })
 

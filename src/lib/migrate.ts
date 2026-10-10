@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import type { AgentRecord } from './types.js'
-import { composeFileArgs, infraDir } from './infra.js'
+import { assertNotDevInstance, assertStackOwnership, composeEnv, composeFileArgs, infraDir } from './infra.js'
 
 export const EXPORT_VERSION = 1
 /** Already pulled by the stack; its busybox tar runs as root so it can read/write the data dirs. */
@@ -24,7 +24,7 @@ export interface ExportManifest {
 }
 
 function run(cmd: string, args: string[], opts: { input?: number; output?: number } = {}): void {
-  const r = spawnSync(cmd, args, { stdio: [opts.input ?? 'ignore', opts.output ?? 'inherit', 'inherit'] })
+  const r = spawnSync(cmd, args, { stdio: [opts.input ?? 'ignore', opts.output ?? 'inherit', 'inherit'], env: composeEnv() })
   if (r.status !== 0) throw new Error(`${cmd} ${args.slice(0, 3).join(' ')}… failed (exit ${r.status ?? r.signal})`)
 }
 
@@ -64,6 +64,8 @@ export const MOVED_PROMPT = '<office-system kind="new-shift">The office moved to
 
 /** Write an export bundle into `outDir`. The caller stops agents + the admin daemon first. */
 export function exportOffice(root: string, outDir: string): ExportManifest {
+  assertNotDevInstance(root, 'export')
+  assertStackOwnership(root)
   if (fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`${outDir} is not empty`)
   fs.mkdirSync(outDir, { recursive: true, mode: 0o700 })
   fs.chmodSync(outDir, 0o700)
@@ -103,6 +105,8 @@ export function readManifest(dir: string): ExportManifest {
  * Returns the agents that were reset to a fresh session (caller queues MOVED_PROMPT).
  */
 export function importOffice(root: string, dir: string, opts: { force?: boolean } = {}): { manifest: ExportManifest; moved: string[] } {
+  assertNotDevInstance(root, 'import')
+  assertStackOwnership(root)
   const manifest = readManifest(dir)
   const dataDir = path.join(infraDir(root), 'data')
   const initialised = fs.existsSync(path.join(root, 'state', 'office.json'))
