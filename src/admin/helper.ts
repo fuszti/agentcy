@@ -2,11 +2,12 @@
 // One-shot LLM call via `opencode run` with a tool-denied config.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { OfficeConfig, OfficeRequest } from '../lib/types.js'
+import type { OfficeConfig, OfficeRequest, ResourceGroup } from '../lib/types.js'
 import { allowedCommands, helpText } from './commands.js'
+import { opencodeProviderOverrides, vaultEnvDefaults } from '../lib/vault.js'
 
 export interface HelperProposal {
   /** argv arrays WITHOUT the leading "office". */
@@ -244,9 +245,10 @@ export function shellEscape(argv: string[]): string {
 }
 
 /** Config that denies every tool the helper must not use. */
-export function buildHelperConfig(): object {
+export function buildHelperConfig(provider?: Record<string, unknown>): object {
   return {
     $schema: 'https://opencode.ai/schemas/config.json',
+    ...(provider && Object.keys(provider).length ? { provider } : {}),
     permission: {
       bash: { '*': 'deny' },
       edit: 'deny',
@@ -277,6 +279,8 @@ export interface RunHelperInput {
   helperModel: string
   prompt: string
   timeoutMs?: number
+  /** Resource groups whose default entries the helper's opencode config should see. */
+  groups?: ResourceGroup[]
 }
 
 export interface RunHelperResult {
@@ -288,12 +292,17 @@ export interface RunHelperResult {
 export function runHelper(input: RunHelperInput): RunHelperResult {
   const helperDir = path.join(input.root, 'state', 'helper')
   const configPath = path.join(helperDir, 'opencode.json')
+  const groups = input.groups ?? []
+  const vaultEnv = vaultEnvDefaults(input.root, groups, 'opencode')
 
-  // Best-effort write of the restrictive config and model cache dir.
-  mkdir(helperDir, { recursive: true }).catch(() => {})
-  writeFile(configPath, JSON.stringify(buildHelperConfig(), null, 2) + '\n').catch(() => {})
+  // Best-effort, but synchronous: the config must be on disk before opencode starts.
+  try {
+    mkdirSync(helperDir, { recursive: true })
+    writeFileSync(configPath, JSON.stringify(buildHelperConfig(opencodeProviderOverrides(groups, vaultEnv)), null, 2) + '\n', { mode: 0o600 })
+    chmodSync(configPath, 0o600)
+  } catch { /* opencode then runs with its defaults */ }
 
-  const env = { ...process.env, OPENCODE_CONFIG: configPath }
+  const env = { ...process.env, ...vaultEnv, OPENCODE_CONFIG: configPath }
   const result = spawnSync('opencode', ['run', '-m', input.helperModel, '--', input.prompt], {
     cwd: helperDir,
     env,

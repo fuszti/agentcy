@@ -336,6 +336,11 @@ export class MattermostClient {
     })
   }
 
+  /** Delete a post; `permanent` also purges it from the database (needs ENABLEAPIPOSTDELETION + a system admin token). */
+  async deletePost(postId: string, permanent = false): Promise<void> {
+    await this.request('DELETE', `/posts/${encodeURIComponent(postId)}${permanent ? '?permanent=true' : ''}`)
+  }
+
   async removeReaction(postId: string, emoji: string): Promise<void> {
     await this.request('DELETE', '/reactions', {
       user_id: (await this.me()).id,

@@ -27,8 +27,13 @@ export interface FinanceAlert {
   message: string
 }
 
-/** Detect usage-threshold crossings and exhausted/throttled groups. Mutates state to record what fired. */
-export function detectGroupAlerts(groups: GroupRow[], thresholds: number[], state: FinanceAlertState): FinanceAlert[] {
+/**
+ * Detect usage-threshold crossings and exhausted/throttled groups. Mutates state to record what
+ * fired. `suggest`, when given, is called with the group id for a fired alert and its returned
+ * text (if any) is appended to the message — used to point at a same-kind group with more
+ * headroom (`office group move`).
+ */
+export function detectGroupAlerts(groups: GroupRow[], thresholds: number[], state: FinanceAlertState, suggest?: (groupId: string) => string | undefined): FinanceAlert[] {
   const alerts: FinanceAlert[] = []
   for (const g of groups) {
     // Threshold crossing.
@@ -37,7 +42,8 @@ export function detectGroupAlerts(groups: GroupRow[], thresholds: number[], stat
       const key = `group:${g.id}:usage`
       const last = state.thresholdBucket.get(key)
       if (bucket !== undefined && bucket !== last) {
-        alerts.push({ key: `${key}:${bucket}`, message: `📊 **${g.label}** usage is ${Math.round(g.usagePercent)}% (crossed ${bucket}%).` })
+        const suggestion = suggest?.(g.id) ?? ''
+        alerts.push({ key: `${key}:${bucket}`, message: `📊 **${g.label}** usage is ${Math.round(g.usagePercent)}% (crossed ${bucket}%).${suggestion}` })
         state.thresholdBucket.set(key, bucket)
       } else if (bucket === undefined) {
         state.thresholdBucket.delete(key)
@@ -49,7 +55,8 @@ export function detectGroupAlerts(groups: GroupRow[], thresholds: number[], stat
     if (g.status === 'exhausted' || g.status === 'throttled') {
       if (!state.healthAlerted.has(healthKey)) {
         const icon = g.status === 'exhausted' ? '🔴' : '🟠'
-        alerts.push({ key: healthKey, message: `${icon} **${g.label}** is ${g.status}. Agents billed to it (${g.agents.map((a) => `@${a}`).join(', ') || 'none'}) may be blocked.` })
+        const suggestion = suggest?.(g.id) ?? ''
+        alerts.push({ key: healthKey, message: `${icon} **${g.label}** is ${g.status}. Agents billed to it (${g.agents.map((a) => `@${a}`).join(', ') || 'none'}) may be blocked.${suggestion}` })
         state.healthAlerted.add(healthKey)
       }
     } else {
@@ -62,12 +69,21 @@ export function detectGroupAlerts(groups: GroupRow[], thresholds: number[], stat
 /**
  * Detect a rolling-window Limits row crossing an alert threshold (e.g. 80%, 95%), including
  * Claude's weekly %. Same one-per-incident-bucket pattern as `detectGroupAlerts`, keyed by
- * group + window so Claude session/week and each OpenCode Go window alert independently.
+ * groupId (falling back to the label when the row has none) + window, so Claude session/week
+ * and each OpenCode Go window alert independently, and two groups sharing a label (e.g. two
+ * Claude subscriptions) don't share a bucket. `suggest` is only called for rows with a groupId.
  */
-export function detectLimitAlerts(rows: LimitRow[], thresholds: number[], state: FinanceAlertState): FinanceAlert[] {
+export function detectLimitAlerts(rows: LimitRow[], thresholds: number[], state: FinanceAlertState, suggest?: (groupId: string) => string | undefined): FinanceAlert[] {
   const alerts: FinanceAlert[] = []
   for (const r of rows) {
-    const key = `limit:${r.group}:${r.window}`
+    const id = r.groupId ?? r.group
+    const key = `limit:${id}:${r.window}`
+    // State written before rows had a groupId is keyed by label: adopt it once (no repeat alert) and drop it.
+    const legacyKey = `limit:${r.group}:${r.window}`
+    if (legacyKey !== key && state.thresholdBucket.has(legacyKey)) {
+      if (!state.thresholdBucket.has(key)) state.thresholdBucket.set(key, state.thresholdBucket.get(legacyKey)!)
+      state.thresholdBucket.delete(legacyKey)
+    }
     if (r.percent === undefined) {
       state.thresholdBucket.delete(key)
       continue
@@ -75,7 +91,8 @@ export function detectLimitAlerts(rows: LimitRow[], thresholds: number[], state:
     const bucket = shouldAlertThreshold(r.percent, thresholds)
     const last = state.thresholdBucket.get(key)
     if (bucket !== undefined && bucket !== last) {
-      alerts.push({ key: `${key}:${bucket}`, message: `⏳ **${r.group}** · ${r.window} is ${Math.round(r.percent)}% used (crossed ${bucket}%)${r.resets && r.resets !== '–' ? ` — resets ${r.resets}` : ''}.` })
+      const suggestion = (r.groupId ? suggest?.(r.groupId) : undefined) ?? ''
+      alerts.push({ key: `${key}:${bucket}`, message: `⏳ **${r.group}** · ${r.window} is ${Math.round(r.percent)}% used (crossed ${bucket}%)${r.resets && r.resets !== '–' ? ` — resets ${r.resets}` : ''}.${suggestion}` })
       state.thresholdBucket.set(key, bucket)
     } else if (bucket === undefined) {
       state.thresholdBucket.delete(key)

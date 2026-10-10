@@ -30,7 +30,7 @@ services:
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:${POSTGRES_PASSWORD}@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
-      MM_SERVICESETTINGS_SITEURL: http://127.0.0.1:8065
+      MM_SERVICESETTINGS_SITEURL: ${MM_SITE_URL:-http://127.0.0.1:8065}
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
@@ -74,7 +74,7 @@ services:
       USER_GID: 1000
       FORGEJO__database__DB_TYPE: sqlite3
       FORGEJO__database__PATH: /data/gitea/gitea.db
-      FORGEJO__server__ROOT_URL: http://127.0.0.1:3033/
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:-http://127.0.0.1:3033/}
       FORGEJO__server__HTTP_PORT: "3000"
       FORGEJO__server__SSH_PORT: "22"
       FORGEJO__server__DISABLE_SSH: "false"

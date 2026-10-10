@@ -7,6 +7,7 @@ import {
   claudeProjectSlug,
   claudeProjectsDir,
   claudeSessionFile,
+  copyClaudeSession,
   findClaudeSessionFile,
   readClaudeTranscript,
   renderTranscript
@@ -84,6 +85,145 @@ describe('claudeProjectsDir / claudeSessionFile', () => {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = prev
     }
+  })
+})
+
+function withConfigDir<T>(dir: string | undefined, fn: () => T): T {
+  const prev = process.env.CLAUDE_CONFIG_DIR
+  if (dir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = dir
+  try {
+    return fn()
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = prev
+  }
+}
+
+describe('explicit configDir', () => {
+  it('claudeProjectsDir(configDir) wins over CLAUDE_CONFIG_DIR', () => {
+    withConfigDir(path.join(tmp, 'env-cfg'), () => {
+      expect(claudeProjectsDir(path.join(tmp, 'explicit'))).toBe(path.join(tmp, 'explicit', 'projects'))
+      expect(claudeProjectsDir(undefined)).toBe(path.join(tmp, 'env-cfg', 'projects'))
+    })
+  })
+
+  it('claudeSessionFile uses the given configDir', () => {
+    withConfigDir(path.join(tmp, 'env-cfg'), () => {
+      expect(claudeSessionFile('/w/space', 'ses-1', path.join(tmp, 'explicit'))).toBe(
+        path.join(tmp, 'explicit', 'projects', '-w-space', 'ses-1.jsonl')
+      )
+    })
+  })
+
+  it('findClaudeSessionFile scans only the given configDir', () => {
+    const cfgA = path.join(tmp, 'find-a')
+    const cfgB = path.join(tmp, 'find-b')
+    const fileA = path.join(cfgA, 'projects', '-w-a', 'ses-a.jsonl')
+    const fileB = path.join(cfgB, 'projects', '-w-b', 'ses-b.jsonl')
+    fs.mkdirSync(path.dirname(fileA), { recursive: true })
+    fs.mkdirSync(path.dirname(fileB), { recursive: true })
+    fs.writeFileSync(fileA, '')
+    fs.writeFileSync(fileB, '')
+    withConfigDir(cfgA, () => {
+      expect(findClaudeSessionFile('ses-b', cfgB)).toBe(fileB)
+      expect(findClaudeSessionFile('ses-a', cfgB)).toBeUndefined()
+      // undefined = env/default dir, as before
+      expect(findClaudeSessionFile('ses-a')).toBe(fileA)
+      expect(findClaudeSessionFile('ses-a', undefined)).toBe(fileA)
+    })
+  })
+})
+
+describe('copyClaudeSession', () => {
+  let n = 0
+  function dirs() {
+    n++
+    const from = path.join(tmp, `copy-from-${String(n)}`)
+    const to = path.join(tmp, `copy-to-${String(n)}`)
+    return { from, to }
+  }
+
+  it('copies the transcript into toDir under the cwd slug, creating dirs', () => {
+    const { from, to } = dirs()
+    const src = path.join(from, 'projects', '-some-other-cwd', 'ses-c.jsonl')
+    fs.mkdirSync(path.dirname(src), { recursive: true })
+    fs.writeFileSync(src, '{"type":"user"}\n')
+    const ok = copyClaudeSession({ sessionId: 'ses-c', cwd: '/w/agent ws', fromDir: from, toDir: to })
+    expect(ok).toBe(true)
+    const dest = path.join(to, 'projects', '-w-agent-ws', 'ses-c.jsonl')
+    expect(dest).toBe(claudeSessionFile('/w/agent ws', 'ses-c', to))
+    expect(fs.readFileSync(dest, 'utf8')).toBe('{"type":"user"}\n')
+    // source is left in place
+    expect(fs.existsSync(src)).toBe(true)
+  })
+
+  it('copies a sibling <sessionId>/ directory recursively when present', () => {
+    const { from, to } = dirs()
+    const projDir = path.join(from, 'projects', '-src')
+    fs.mkdirSync(path.join(projDir, 'ses-d', 'subagents'), { recursive: true })
+    fs.mkdirSync(path.join(projDir, 'ses-d', 'tool-results'), { recursive: true })
+    fs.writeFileSync(path.join(projDir, 'ses-d.jsonl'), 'main\n')
+    fs.writeFileSync(path.join(projDir, 'ses-d', 'subagents', 'agent-1.jsonl'), 'sub\n')
+    fs.writeFileSync(path.join(projDir, 'ses-d', 'tool-results', 'r.txt'), 'result')
+    expect(copyClaudeSession({ sessionId: 'ses-d', cwd: '/w/dst', fromDir: from, toDir: to })).toBe(true)
+    const destProj = path.join(to, 'projects', '-w-dst')
+    expect(fs.readFileSync(path.join(destProj, 'ses-d.jsonl'), 'utf8')).toBe('main\n')
+    expect(fs.readFileSync(path.join(destProj, 'ses-d', 'subagents', 'agent-1.jsonl'), 'utf8')).toBe('sub\n')
+    expect(fs.readFileSync(path.join(destProj, 'ses-d', 'tool-results', 'r.txt'), 'utf8')).toBe('result')
+  })
+
+  it('does not create a sibling dir when the source has none', () => {
+    const { from, to } = dirs()
+    const src = path.join(from, 'projects', '-src', 'ses-e.jsonl')
+    fs.mkdirSync(path.dirname(src), { recursive: true })
+    fs.writeFileSync(src, 'x\n')
+    expect(copyClaudeSession({ sessionId: 'ses-e', cwd: '/w/dst', fromDir: from, toDir: to })).toBe(true)
+    expect(fs.existsSync(path.join(to, 'projects', '-w-dst', 'ses-e'))).toBe(false)
+  })
+
+  it('returns false when the session is missing in fromDir', () => {
+    const { from, to } = dirs()
+    fs.mkdirSync(path.join(from, 'projects', '-src'), { recursive: true })
+    expect(copyClaudeSession({ sessionId: 'ses-nope', cwd: '/w/dst', fromDir: from, toDir: to })).toBe(false)
+    expect(fs.existsSync(path.join(to, 'projects', '-w-dst', 'ses-nope.jsonl'))).toBe(false)
+    // a fromDir with no projects dir at all is also just "not found"
+    expect(copyClaudeSession({ sessionId: 'ses-nope', cwd: '/w/dst', fromDir: path.join(tmp, 'no-such-cfg'), toDir: to })).toBe(false)
+  })
+
+  it('overwrites an existing destination', () => {
+    const { from, to } = dirs()
+    const src = path.join(from, 'projects', '-src', 'ses-f.jsonl')
+    fs.mkdirSync(path.dirname(src), { recursive: true })
+    fs.writeFileSync(src, 'new content\n')
+    const dest = path.join(to, 'projects', '-w-dst', 'ses-f.jsonl')
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.writeFileSync(dest, 'old content that is longer than the new one\n')
+    expect(copyClaudeSession({ sessionId: 'ses-f', cwd: '/w/dst', fromDir: from, toDir: to })).toBe(true)
+    expect(fs.readFileSync(dest, 'utf8')).toBe('new content\n')
+  })
+
+  it('undefined fromDir/toDir mean the env/default config dir', () => {
+    const { from: envDir, to: other } = dirs()
+    withConfigDir(envDir, () => {
+      // from the env dir to an explicit dir
+      const src = path.join(envDir, 'projects', '-src', 'ses-g.jsonl')
+      fs.mkdirSync(path.dirname(src), { recursive: true })
+      fs.writeFileSync(src, 'from env\n')
+      expect(copyClaudeSession({ sessionId: 'ses-g', cwd: '/w/dst', toDir: other })).toBe(true)
+      expect(fs.readFileSync(path.join(other, 'projects', '-w-dst', 'ses-g.jsonl'), 'utf8')).toBe('from env\n')
+
+      // from an explicit dir to the env dir
+      const src2 = path.join(other, 'projects', '-elsewhere', 'ses-h.jsonl')
+      fs.mkdirSync(path.dirname(src2), { recursive: true })
+      fs.writeFileSync(src2, 'to env\n')
+      expect(copyClaudeSession({ sessionId: 'ses-h', cwd: '/w/back', fromDir: other })).toBe(true)
+      expect(fs.readFileSync(path.join(envDir, 'projects', '-w-back', 'ses-h.jsonl'), 'utf8')).toBe('to env\n')
+
+      // both undefined: copy within the env dir to a new cwd slug
+      expect(copyClaudeSession({ sessionId: 'ses-g', cwd: '/w/moved' })).toBe(true)
+      expect(fs.readFileSync(path.join(envDir, 'projects', '-w-moved', 'ses-g.jsonl'), 'utf8')).toBe('from env\n')
+    })
   })
 })
 

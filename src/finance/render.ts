@@ -120,6 +120,7 @@ export function renderAgentDetail(row: AgentRow): string {
 /** One row of the Limits section: a resource group's usage against a rolling-window cap. */
 export interface LimitRow {
   group: string // e.g. "Claude subscription", "OpenCode Go", "OpenRouter"
+  groupId?: string // resource group id this row belongs to, for headroom/alert keys
   window: string // e.g. "5-hour session", "week (all models)", "Rolling (5h)", "Weekly", "balance"
   usedText: string // "-" when only a % is known (Claude), else a dollar figure
   limitText: string // "-" when only a % is known, else a dollar figure

@@ -25,6 +25,8 @@ export const allowedCommands = new Set([
   'peek',
   'activity',
   'finance',
+  'vault',
+  'group',
 ])
 
 export interface ParsedCommand {
@@ -108,6 +110,35 @@ export function parseCommandLine(text: string, opts: { threadParentIsProposal?: 
   return { kind: 'command', command, args: parsed.slice(1) }
 }
 
+/**
+ * Entry id when a chat message is `vault set <id> <value>`, i.e. a key was pasted into chat.
+ * Works on the raw text so it also catches thread replies that would be parsed as `generate`.
+ */
+export function vaultSetLeak(text: string): string | undefined {
+  return /^\s*(?:office\s+|!)?vault\s+set\s+(\S+)\s+\S/i.exec(text)?.[1]
+}
+
+/**
+ * The shell command to show after purging a leaked key. The captured "entry id" is untrusted
+ * text (with swapped arguments it IS the key), so it is only repeated when it is a real entry.
+ */
+export function vaultSetHint(entryId: string | undefined, knownIds: string[]): string {
+  return `office vault set ${entryId !== undefined && knownIds.includes(entryId) ? entryId : '<id>'}`
+}
+
+// Known API-key shapes only: purging is permanent, so a generic "looks random" rule that could
+// also hit commit hashes, session ids or links is deliberately not used.
+const KEY_PATTERNS: [kind: string, re: RegExp][] = [
+  ['OpenRouter', /(?<![A-Za-z0-9])sk-or-v1-[A-Za-z0-9]{32,}/],
+  ['Anthropic', /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{32,}/],
+  ['API', /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{40,}/], // OpenCode Go/Zen, OpenAI-style
+]
+
+/** Which kind of API key a chat message contains, if any. Never returns the key. */
+export function leakedKeyKind(text: string): string | undefined {
+  return KEY_PATTERNS.find(([, re]) => re.test(text))?.[0]
+}
+
 /** True if `name` is an admin-channel command. */
 export function isAllowedCommand(name: string): boolean {
   return allowedCommands.has(name.toLowerCase())
@@ -166,6 +197,11 @@ Available office commands (prefix with \`office \` or \`!\`):
   - \`project list\`
   - \`project staff <name> [--add a,b] [--remove c]\`
   - \`project archive <name>\`
+- **vault** — provider API key status (keys are set on the server shell, never in chat)
+  - \`vault\`, \`vault check\`
+- **group** — resource groups (Claude subscriptions, OpenCode Go / OpenRouter keys)
+  - \`group\`, \`group add <kind> --id X [--label L]\`, \`group rm <id>\`, \`group move <agent> <id>\`
+  - \`group login <id>\` only works on the office server's own shell, not from chat
 - **generate** — describe what you want in plain words and get the matching office command(s)
   - \`generate <text>\`, \`gen <text>\`, \`? <text>\`
 `.trim()

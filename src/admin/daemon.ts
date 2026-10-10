@@ -10,7 +10,8 @@ import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { ChatPost, OfficeRequest, RequestStatus } from '../lib/types.js'
 import { listAgents, loadAgent } from '../lib/config.js'
-import { helpText, parseCommandLine, parseRequestId } from './commands.js'
+import { helpText, parseCommandLine, parseRequestId, leakedKeyKind, vaultSetHint, vaultSetLeak } from './commands.js'
+import { vaultSpecs } from '../lib/vault.js'
 import { listRequests, loadRequest, setRequestStatus, updateRequest } from '../lib/requests.js'
 import { formatProjectCreatedFyi, formatProjectCreatedNotice } from '../lib/project-requests.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
@@ -29,6 +30,8 @@ import { loadWatchdogState, runWatchdog, saveWatchdogState } from './watchdog.js
 import { collectFinanceSnapshot } from '../finance/collect.js'
 import { detectGroupAlerts, detectLimitAlerts, loadFinanceAlertState, saveFinanceAlertState } from '../finance/alerts.js'
 import { renderFinanceReport } from '../finance/render.js'
+import { suggestMoveText } from '../finance/groups.js'
+import { headroomFromSnapshot } from '../finance/headroom.js'
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 const HOURGLASS = 'hourglass_flowing_sand'
@@ -247,7 +250,7 @@ async function run() {
     let validated: { ok: true; proposal: HelperProposal } | { ok: false; error: string } | undefined
     for (let attempt = 0; attempt < 2; attempt++) {
       const fullPrompt = lastError ? `${prompt}\n\n[VALIDATION ERROR ON PREVIOUS ATTEMPT — FIX IT]: ${lastError}` : prompt
-      const result = runHelper({ root, helperModel: config.defaults.helperModel, prompt: fullPrompt, timeoutMs: 120_000 })
+      const result = runHelper({ root, helperModel: config.defaults.helperModel, prompt: fullPrompt, timeoutMs: 120_000, groups: config.resourceGroups })
       if (result.exitCode !== 0) {
         adminLog(`helper run failed exit=${result.exitCode} output=${result.output.slice(0, 200)}`)
         lastError = `helper process exited ${result.exitCode}`
@@ -516,8 +519,31 @@ async function run() {
     }
   }
 
+  /**
+   * A key was pasted into chat (`vault set <id> <value>`, or a known key format anywhere in the
+   * message): purge the post right away, before
+   * any parsing or queueing, so it neither waits behind running jobs nor reaches the helper model.
+   * Needs the owner's token: bots can't delete other users' posts.
+   */
+  async function purgeLeakedKey(post: ChatPost, leak: { entryId?: string; kind?: string }, replyChannelId: string): Promise<void> {
+    const purged = await new MattermostClient(config.mattermostUrl, secrets!.mattermost.adminToken).deletePost(post.id, true).then(() => true, () => false)
+    adminLog(`key in chat (${leak.entryId ? 'vault set' : leak.kind}) post=${post.id} purged=${purged}`)
+    await mm.createPost({
+      channelId: replyChannelId,
+      message: `⚠️ That looked like ${leak.kind ? `an ${leak.kind} key` : 'an API key'}, so I ${purged ? 'permanently deleted your message' : 'tried to delete your message (failed: delete it yourself)'}. ` +
+        `Treat the key as leaked and rotate it at the provider. Keys are only set on the server shell: \`${vaultSetHint(leak.entryId, vaultSpecs(config.resourceGroups).map((x) => x.id))}\` (input hidden; \`vault\` lists the ids).`,
+    }).catch(() => {})
+  }
+
   function handlePost(post: ChatPost) {
     if (post.userId === botUserId) return // ignore own posts
+    if ((post.channelId === channel.id || post.channelId === financeChannel.id) && post.userId === secrets!.mattermost.humanUserId) {
+      const leak = { entryId: vaultSetLeak(post.message), kind: leakedKeyKind(post.message) }
+      if (leak.entryId || leak.kind) {
+        purgeLeakedKey(post, leak, post.channelId).catch((e) => adminLog(`purge failed post=${post.id}: ${(e as Error).message}`))
+        return
+      }
+    }
     if (post.channelId === financeChannel.id) {
       if (post.userId !== secrets!.mattermost.humanUserId) return
       handleFinanceChannelPost(post).catch((e) => adminLog(`finance channel error post=${post.id}: ${(e as Error).message}`))
@@ -600,10 +626,14 @@ async function run() {
     try {
       const snapshot = await collectFinanceSnapshot(root, config)
       const now = Date.now()
+      // Point an alert at a same-kind group with more headroom (`office group move`).
+      const usedPercent = headroomFromSnapshot(snapshot.limits, snapshot.groupsWeek)
+      const agentsByGroup = new Map(snapshot.groupsWeek.map((g) => [g.id, g.agents]))
+      const suggest = (id: string) => suggestMoveText(id, config.resourceGroups, usedPercent, agentsByGroup.get(id) ?? [])
       const thresholds = config.finance?.usageAlertThresholds ?? [75, 90, 100]
-      const alerts = detectGroupAlerts(snapshot.groupsToday, thresholds, financeState)
+      const alerts = detectGroupAlerts(snapshot.groupsToday, thresholds, financeState, suggest)
       const limitThresholds = config.finance?.limitAlertThresholds ?? [80, 95]
-      alerts.push(...detectLimitAlerts(snapshot.limits, limitThresholds, financeState))
+      alerts.push(...detectLimitAlerts(snapshot.limits, limitThresholds, financeState, suggest))
       for (const a of alerts) {
         await mm.createPost({ channelId: financeChannel.id, message: a.message }).catch(() => {})
       }

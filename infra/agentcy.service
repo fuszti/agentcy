@@ -1,0 +1,25 @@
+# systemd unit template; install.sh fills in @USER@/@HOME@/@DIR@/@PATH@ and installs it as
+# /etc/systemd/system/agentcy.service. Starts the chat/tickets stack, the #office-admin
+# daemon and every hired agent at boot; stops the agent sessions cleanly on shutdown.
+[Unit]
+Description=Agentcy office (chat, tickets and AI colleagues)
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@USER@
+WorkingDirectory=@DIR@
+Environment=HOME=@HOME@
+Environment=PATH=@PATH@
+ExecStart=@DIR@/bin/office start
+ExecStop=@DIR@/bin/office shutdown
+# Each Claude agent waits up to ~45s for its TUI to settle.
+TimeoutStartSec=20min
+TimeoutStopSec=2min
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
