@@ -89,37 +89,57 @@ jobs:
 
       - uses: actions/checkout@v4
         if: env.HAS_KEY == 'true'
+        with:
+          fetch-depth: 0
+
+      # The test spends model tokens, so it runs only when src/, infra/ or test/ changed.
+      - name: Check changed paths
+        if: env.HAS_KEY == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # a pull request is checked out as its merge commit, whose first parent is the base
+          if [ "$EVENT" = pull_request ]; then base=HEAD^1; else base=$BEFORE; fi
+          if ! changed=$(git diff --name-only "$base" HEAD); then
+            echo "::notice::could not list changed files, running the end-to-end test"
+            echo "RUN_E2E=true" >> "$GITHUB_ENV"
+          elif echo "$changed" | grep -qE '^(src|infra|test)/'; then
+            echo "RUN_E2E=true" >> "$GITHUB_ENV"
+          else
+            echo "::notice::no change under src/, infra/ or test/, end-to-end test skipped"
+          fi
 
       - name: Use Node.js 22
-        if: env.HAS_KEY == 'true'
+        if: env.RUN_E2E == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Install tmux and opencode
-        if: env.HAS_KEY == 'true'
+        if: env.RUN_E2E == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux
           npm i -g opencode-ai@1.18.35
 
       - name: Install dependencies
-        if: env.HAS_KEY == 'true'
+        if: env.RUN_E2E == 'true'
         run: npm ci
 
       - name: Bring up the dev office
-        if: env.HAS_KEY == 'true'
+        if: env.RUN_E2E == 'true'
         run: bin/office dev init --name ci
 
       - name: End-to-end test
-        if: env.HAS_KEY == 'true'
+        if: env.RUN_E2E == 'true'
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: npm run test:e2e
 
       - name: Dump diagnostics
-        if: failure() && env.HAS_KEY == 'true'
+        if: failure() && env.RUN_E2E == 'true'
         run: |
           docker ps -a
           for c in $(docker ps -a --format '{{.Names}}' | grep '^agentcy-'); do
@@ -142,6 +162,6 @@ jobs:
           done
 
       - name: Tear down
-        if: always() && env.HAS_KEY == 'true'
+        if: always() && env.RUN_E2E == 'true'
         # nothing to remove when init failed before it created the instance
         run: if bin/office dev info >/dev/null 2>&1; then bin/office dev down --purge; fi
