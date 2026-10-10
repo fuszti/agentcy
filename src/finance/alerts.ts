@@ -78,6 +78,12 @@ export function detectLimitAlerts(rows: LimitRow[], thresholds: number[], state:
   for (const r of rows) {
     const id = r.groupId ?? r.group
     const key = `limit:${id}:${r.window}`
+    // State written before rows had a groupId is keyed by label: adopt it once (no repeat alert) and drop it.
+    const legacyKey = `limit:${r.group}:${r.window}`
+    if (legacyKey !== key && state.thresholdBucket.has(legacyKey)) {
+      if (!state.thresholdBucket.has(key)) state.thresholdBucket.set(key, state.thresholdBucket.get(legacyKey)!)
+      state.thresholdBucket.delete(legacyKey)
+    }
     if (r.percent === undefined) {
       state.thresholdBucket.delete(key)
       continue

@@ -9,7 +9,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawnSync } from 'node:child_process'
 import { loadConfig, saveConfig } from '../lib/config.js'
-import { applyAccessMode, tailscaleServeCommands, type AccessMode } from '../lib/infra.js'
+import { applyAccessMode, isValidHostname, tailscaleServeCommands, type AccessMode } from '../lib/infra.js'
 import { MOVED_PROMPT, importOffice, readManifest } from '../lib/migrate.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
 import type { ResourceGroup } from '../lib/types.js'
@@ -107,8 +107,12 @@ async function pickAccess(): Promise<AccessMode> {
   console.log('How will you open the office (chat + tickets) from your laptop/phone?')
   const mode = await choose('Choice', options)
   if (mode.kind === 'lan') {
-    const host = await ask('Hostname to use in links instead of the IP (e.g. nas.lan; empty = use the IP)')
-    if (host) mode.host = host
+    for (;;) {
+      const host = await ask('Hostname to use in links instead of the IP (e.g. nas.lan; empty = use the IP)')
+      if (!host) break
+      if (isValidHostname(host)) { mode.host = host; break }
+      console.log('  just the name, e.g. nas.lan: no http://, port, path or spaces')
+    }
   }
   return mode
 }

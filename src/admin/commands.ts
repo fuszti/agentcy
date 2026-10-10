@@ -110,6 +110,14 @@ export function parseCommandLine(text: string, opts: { threadParentIsProposal?: 
   return { kind: 'command', command, args: parsed.slice(1) }
 }
 
+/**
+ * Entry id when a chat message is `vault set <id> <value>`, i.e. a key was pasted into chat.
+ * Works on the raw text so it also catches thread replies that would be parsed as `generate`.
+ */
+export function vaultSetLeak(text: string): string | undefined {
+  return /^\s*(?:office\s+|!)?vault\s+set\s+(\S+)\s+\S/i.exec(text)?.[1]
+}
+
 /** True if `name` is an admin-channel command. */
 export function isAllowedCommand(name: string): boolean {
   return allowedCommands.has(name.toLowerCase())

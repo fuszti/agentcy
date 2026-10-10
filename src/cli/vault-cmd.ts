@@ -12,13 +12,27 @@ import {
   renderVaultStatus, setSecret, validateSecret, vaultSpec, vaultSpecs,
 } from '../lib/vault.js'
 
-/** Prompt without echoing what is typed. */
-export function promptHidden(question: string): Promise<string> {
+/** Prompt without echoing what is typed. Rejects on Ctrl+C or when input ends, instead of hanging. */
+export function promptHidden(
+  question: string,
+  input: NodeJS.ReadableStream = process.stdin,
+  write: (s: string) => void = s => { process.stdout.write(s) },
+): Promise<string> {
   let muted = false
-  const out = new Writable({ write(chunk, _enc, cb) { if (!muted) process.stdout.write(chunk); cb() } })
-  const rl = readline.createInterface({ input: process.stdin, output: out, terminal: true })
-  return new Promise(resolve => {
-    rl.question(question, answer => { rl.close(); process.stdout.write('\n'); resolve(answer) })
+  const out = new Writable({ write(chunk, _enc, cb) { if (!muted) write(chunk.toString()); cb() } })
+  const rl = readline.createInterface({ input, output: out, terminal: true })
+  return new Promise((resolve, reject) => {
+    let done = false
+    const cancel = () => {
+      if (done) return
+      done = true
+      rl.close() // also restores the terminal mode
+      write('\n')
+      reject(new Error('cancelled'))
+    }
+    rl.on('SIGINT', cancel)
+    rl.on('close', cancel)
+    rl.question(question, answer => { done = true; rl.close(); write('\n'); resolve(answer) })
     muted = true
   })
 }

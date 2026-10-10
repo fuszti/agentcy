@@ -2,7 +2,7 @@
 // One-shot LLM call via `opencode run` with a tool-denied config.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { OfficeConfig, OfficeRequest, ResourceGroup } from '../lib/types.js'
@@ -295,9 +295,12 @@ export function runHelper(input: RunHelperInput): RunHelperResult {
   const groups = input.groups ?? []
   const vaultEnv = vaultEnvDefaults(input.root, groups, 'opencode')
 
-  // Best-effort write of the restrictive config and model cache dir.
-  mkdir(helperDir, { recursive: true }).catch(() => {})
-  writeFile(configPath, JSON.stringify(buildHelperConfig(opencodeProviderOverrides(groups, vaultEnv)), null, 2) + '\n').catch(() => {})
+  // Best-effort, but synchronous: the config must be on disk before opencode starts.
+  try {
+    mkdirSync(helperDir, { recursive: true })
+    writeFileSync(configPath, JSON.stringify(buildHelperConfig(opencodeProviderOverrides(groups, vaultEnv)), null, 2) + '\n', { mode: 0o600 })
+    chmodSync(configPath, 0o600)
+  } catch { /* opencode then runs with its defaults */ }
 
   const env = { ...process.env, ...vaultEnv, OPENCODE_CONFIG: configPath }
   const result = spawnSync('opencode', ['run', '-m', input.helperModel, '--', input.prompt], {

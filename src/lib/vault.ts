@@ -110,8 +110,22 @@ export function ensureVaultKey(root: string): Buffer {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
-  const key = randomBytes(32)
-  writeFile600(file, key)
+  // Two processes can get here together on a fresh install. Publish the key with link(), which
+  // fails if the file exists, so the first one wins and the other adopts it; an overwrite would
+  // make everything the loser encrypted unreadable.
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.tmp.${process.pid}`
+  fs.writeFileSync(tmp, randomBytes(32), { mode: 0o600 })
+  try {
+    fs.chmodSync(tmp, 0o600)
+    fs.linkSync(tmp, file)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  } finally {
+    fs.rmSync(tmp, { force: true })
+  }
+  const key = fs.readFileSync(file)
+  if (key.length !== 32) throw new Error(`${file} is corrupt (expected 32 bytes)`)
   return key
 }
 

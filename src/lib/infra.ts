@@ -87,11 +87,20 @@ export type AccessMode =
 
 export interface PublicUrls { mattermost: string; forgejo: string }
 
+const HOST_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+const HOSTNAME_RE = new RegExp(`^${HOST_LABEL}(?:\\.${HOST_LABEL})*$`)
+
+/** A plain DNS name (no scheme, port, path or spaces), safe to drop into a URL. */
+export function isValidHostname(host: string): boolean {
+  return host.length <= 253 && HOSTNAME_RE.test(host)
+}
+
 /** Public URLs for an access mode. Tailscale serves HTTPS on 443 (chat) and 8443 (tickets). */
 export function publicUrlsFor(mode: AccessMode): PublicUrls {
   switch (mode.kind) {
     case 'local': return { mattermost: 'http://127.0.0.1:8065', forgejo: 'http://127.0.0.1:3033' }
     case 'lan': {
+      if (mode.host !== undefined && !isValidHostname(mode.host)) throw new Error(`not a valid hostname: ${mode.host}`)
       const h = mode.host ?? (mode.addr.includes(':') ? `[${mode.addr}]` : mode.addr)
       return { mattermost: `http://${h}:8065`, forgejo: `http://${h}:3033` }
     }

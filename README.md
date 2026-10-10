@@ -149,7 +149,8 @@ you'll have two offices drifting apart.
 chmod-600 env file:
 
 - opencode keys go to opencode agents only;
-- an optional `claude-oauth` token from `claude setup-token` goes to Claude agents;
+- an optional `claude setup-token` token, stored under a Claude group's own id
+  (`office vault set claude-sub`), goes to that group's Claude agents;
 - an Anthropic API key is never given to Claude agents, since it would override your
   subscription.
 
