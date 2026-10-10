@@ -30,6 +30,8 @@ export function claudeSettings(root: string, statusFile: string, workspace?: str
     hooks: [{ type: 'command', command: `${root}/scripts/hook-status.sh '${statusFile}' ${state} ${detail}`.trim(), timeout: 5 }],
   }]
   return {
+    // The repo-root CLAUDE.md is about developing Agentcy; a hired agent's cwd is below it, so it would load it.
+    claudeMdExcludes: [`${root}/CLAUDE.md`],
     // Office + browser tools never need a prompt; everything else follows the permission mode.
     // Brain + own workspace edits are always fine (absolute paths use the // prefix).
     permissions: {

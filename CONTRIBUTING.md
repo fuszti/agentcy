@@ -9,32 +9,41 @@ group of volunteers, so please keep contributions focused and be patient with re
 git clone git@github.com:fuszti/agentcy.git
 cd agentcy
 npm ci
-cp office.config.example.json office.config.json   # bin/office does this for you too if you skip it
 ```
 
 You'll also want Docker, tmux, git, and the Claude Code CLI and/or opencode installed locally to
 exercise the full stack (see the README's Requirements section). Most unit tests do not require
 any of that.
 
+To run the stack, bring up a dev office: `bin/office dev init`. It is isolated from any other
+office on your machine (own containers, ports and volumes), and each checkout or worktree gets its
+own. Tear it down with `bin/office dev down --purge`. If you already run a live office from another
+checkout, never run `office init`, `up`, `start` or `setup` here without `dev init` first. See
+"Developing Agentcy" in the README.
+
 ## Checks
 
-Run these before opening a PR — CI runs the same checks on Node 20 and 22:
+Run this before opening a PR. CI runs the same checks on Node 20 and 22:
 
 ```bash
-npx tsc --noEmit
-npx vitest run
+npm run check    # tsc --noEmit, biome lint, vitest run
 ```
 
-Integration tests that talk to a live stack (`OFFICE_INTEGRATION=1 npx vitest run test/integration`)
-or a live opencode server (`OPENCODE_LIVE=1 npx vitest run test/opencode.test.ts`) are not run in
-CI and aren't required for a PR, but please run them if your change touches that area.
+CI also runs integration and end-to-end tests against a dev office. Run them yourself if your
+change touches that area; both need `bin/office dev init` first and refuse to run otherwise:
+
+```bash
+npm run test:integration
+npm run test:e2e                                # hires an opencode agent on a cheap model
+OPENCODE_LIVE=1 npx vitest run test/opencode.test.ts    # against a live opencode server
+```
 
 ## Guidelines
 
 - Keep PRs small and focused on one change. Large, multi-topic PRs are hard to review and more
   likely to stall.
-- Match the existing code style (see the surrounding file); there's no separate linter/formatter
-  config to run.
+- Match the existing code style (see the surrounding file). Biome lints the code (`npm run lint`);
+  there is no formatter, so don't reformat files you aren't changing.
 - Add or update tests for behavior changes. Tests must not depend on any contributor's local
   machine, account, or files — use fixtures and generic example data.
 - Write commit messages that explain *why*, not just *what*; a short, conventional-ish prefix

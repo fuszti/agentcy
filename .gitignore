@@ -9,3 +9,4 @@ office.config.json
 .DS_Store
 coverage/
 brain/
+.worktrees/

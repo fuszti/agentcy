@@ -9,7 +9,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawnSync } from 'node:child_process'
 import { loadConfig, saveConfig } from '../lib/config.js'
-import { applyAccessMode, isValidHostname, tailscaleServeCommands, type AccessMode } from '../lib/infra.js'
+import { applyAccessMode, assertNotDevInstance, assertStackOwnership, isValidHostname, tailscaleServeCommands, type AccessMode } from '../lib/infra.js'
 import { MOVED_PROMPT, importOffice, readManifest } from '../lib/migrate.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
 import type { ResourceGroup } from '../lib/types.js'
@@ -150,6 +150,8 @@ async function claudeLogin(): Promise<void> {
 }
 
 export async function runSetup(root: string, flags: Record<string, string | boolean>): Promise<void> {
+  assertNotDevInstance(root, 'setup')
+  assertStackOwnership(root)
   if (!process.stdin.isTTY) throw new Error('office setup is interactive: run it in a terminal on the office server')
   console.log(`\x1b[1mAgentcy setup\x1b[0m — office at ${root} (user ${os.userInfo().username})`)
   console.log('Re-running is safe: it only changes what you choose to change.')

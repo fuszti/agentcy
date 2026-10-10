@@ -1,0 +1,30 @@
+# Override for dev instances (`office dev init`): named volumes instead of the bind-mounted
+# ./data, so a dev office leaves no root-owned files in the checkout and
+# `docker compose down -v` removes all of its data. Added by composeFileArgs when
+# infra/.env has OFFICE_INSTANCE. Compose merges volumes by container path, so these replace
+# the ./data binds of docker-compose.yml.
+services:
+  postgres:
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  mattermost:
+    volumes:
+      - mattermost-config:/mattermost/config
+      - mattermost-data:/mattermost/data
+      - mattermost-logs:/mattermost/logs
+      - mattermost-plugins:/mattermost/plugins
+      - mattermost-client-plugins:/mattermost/client-plugins
+      - mattermost-bleve-indexes:/mattermost/bleve-indexes
+  forgejo:
+    volumes:
+      - forgejo-data:/data
+
+volumes:
+  postgres-data:
+  mattermost-config:
+  mattermost-data:
+  mattermost-logs:
+  mattermost-plugins:
+  mattermost-client-plugins:
+  mattermost-bleve-indexes:
+  forgejo-data:
