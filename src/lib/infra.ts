@@ -15,6 +15,20 @@ export function infraDir(root: string): string {
   return path.join(root, 'infra')
 }
 
+/** Compose override that swaps the bind-mounted infra/data for named volumes (dev instances). */
+export const DEV_OVERRIDE = 'docker-compose.dev.yml'
+export const DEFAULT_CONTAINER_PREFIX = 'agent-office'
+
+/** OFFICE_INSTANCE from infra/.env: the dev instance name, or undefined for a normal office. */
+export function instanceName(root: string): string | undefined {
+  return readInfraEnv(root).OFFICE_INSTANCE || undefined
+}
+
+/** Container name prefix: OFFICE_CONTAINER_PREFIX from infra/.env, default 'agent-office'. */
+export function containerPrefix(root: string): string {
+  return readInfraEnv(root).OFFICE_CONTAINER_PREFIX || DEFAULT_CONTAINER_PREFIX
+}
+
 /** `-f` arguments for `docker compose`, including the LAN override when present. */
 export function composeFileArgs(root: string): string[] {
   const dir = infraDir(root)
