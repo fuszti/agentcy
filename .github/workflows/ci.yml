@@ -73,49 +73,53 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: bin/office dev down --purge
+        # nothing to remove when init failed before it created the instance
+        run: if bin/office dev info >/dev/null 2>&1; then bin/office dev down --purge; fi
 
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+      # Only whether the secret exists; the key itself is passed to the test step alone.
+      HAS_KEY: ${{ secrets.OPENCODE_GO_API_KEY != '' }}
     steps:
       - name: Skip notice
-        if: env.OPENCODE_GO_API_KEY == ''
+        if: env.HAS_KEY != 'true'
         run: echo "::notice::OPENCODE_GO_API_KEY secret is not set (forks, or not configured), end-to-end test skipped"
 
       - uses: actions/checkout@v4
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
 
       - name: Use Node.js 22
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Install tmux and opencode
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux
-          npm i -g opencode-ai
+          npm i -g opencode-ai@1.18.35
 
       - name: Install dependencies
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
         run: npm ci
 
       - name: Bring up the dev office
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
         run: bin/office dev init --name ci
 
       - name: End-to-end test
-        if: env.OPENCODE_GO_API_KEY != ''
+        if: env.HAS_KEY == 'true'
+        env:
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: npm run test:e2e
 
       - name: Dump diagnostics
-        if: failure() && env.OPENCODE_GO_API_KEY != ''
+        if: failure() && env.HAS_KEY == 'true'
         run: |
           docker ps -a
           for c in $(docker ps -a --format '{{.Names}}' | grep '^agentcy-'); do
@@ -138,5 +142,6 @@ jobs:
           done
 
       - name: Tear down
-        if: always() && env.OPENCODE_GO_API_KEY != ''
-        run: bin/office dev down --purge
+        if: always() && env.HAS_KEY == 'true'
+        # nothing to remove when init failed before it created the instance
+        run: if bin/office dev info >/dev/null 2>&1; then bin/office dev down --purge; fi

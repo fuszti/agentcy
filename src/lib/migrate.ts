@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import type { AgentRecord } from './types.js'
-import { assertNotDevInstance, assertStackOwnership, composeFileArgs, infraDir } from './infra.js'
+import { assertNotDevInstance, assertStackOwnership, composeEnv, composeFileArgs, infraDir } from './infra.js'
 
 export const EXPORT_VERSION = 1
 /** Already pulled by the stack; its busybox tar runs as root so it can read/write the data dirs. */
@@ -24,7 +24,7 @@ export interface ExportManifest {
 }
 
 function run(cmd: string, args: string[], opts: { input?: number; output?: number } = {}): void {
-  const r = spawnSync(cmd, args, { stdio: [opts.input ?? 'ignore', opts.output ?? 'inherit', 'inherit'] })
+  const r = spawnSync(cmd, args, { stdio: [opts.input ?? 'ignore', opts.output ?? 'inherit', 'inherit'], env: composeEnv() })
   if (r.status !== 0) throw new Error(`${cmd} ${args.slice(0, 3).join(' ')}… failed (exit ${r.status ?? r.signal})`)
 }
 

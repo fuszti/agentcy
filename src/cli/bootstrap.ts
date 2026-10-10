@@ -10,7 +10,7 @@ import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgen
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import type { OfficeSecrets, ChatChannel } from '../lib/types.js'
-import { assertStackOwnership, composeFileArgs, writeInfraEnv } from '../lib/infra.js'
+import { assertStackOwnership, composeEnv, composeFileArgs, writeInfraEnv } from '../lib/infra.js'
 
 const INFRA_DIR = path.join(repoRoot(), 'infra')
 const ENV_PATH = path.join(INFRA_DIR, '.env')
@@ -23,6 +23,7 @@ function dockerCompose(args: string[], options?: { capture?: boolean; quiet?: bo
   return new Promise((resolve, reject) => {
     const cp = spawn('docker', ['compose', ...composeFileArgs(repoRoot()), ...args], {
       stdio: options?.capture ? ['ignore', 'pipe', 'pipe'] : options?.quiet ? ['ignore', 'ignore', 'ignore'] : 'inherit',
+      env: composeEnv(),
     })
     let out = ''
     let err = ''
@@ -44,6 +45,7 @@ function dockerExec(service: 'mattermost' | 'forgejo', user: string | undefined,
     args.push(service, ...command)
     const cp = spawn('docker', args, {
       stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      env: composeEnv(),
     })
     let out = ''
     let err = ''
@@ -80,13 +82,27 @@ async function readEnv(): Promise<Record<string, string>> {
   return out
 }
 
+/**
+ * fetch with a deadline held by a normal (ref'd) timer. While a container is still starting, a
+ * request can stall with nothing left on the event loop, and Node then exits 0 in the middle of
+ * bootstrap. The timer keeps the process alive and turns the stall into a retry.
+ */
+async function probe<T>(url: string, read: (res: Response) => Promise<T>, ms = 5000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer from ${url} in ${ms}ms`)), ms) })
+  try {
+    return await Promise.race([fetch(url).then(read), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function waitForMattermost(baseUrl: string, timeoutMs = 120000): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${baseUrl}/api/v4/system/ping?get_server_status=true`)
-      const json = (await res.json()) as { status?: string }
-      if (res.ok && json.status === 'OK') return
+      const ok = await probe(`${baseUrl}/api/v4/system/ping?get_server_status=true`, async (res) => res.ok && ((await res.json()) as { status?: string }).status === 'OK')
+      if (ok) return
     } catch {
       // ignore
     }
@@ -99,13 +115,11 @@ async function waitForForgejo(baseUrl: string, timeoutMs = 120000): Promise<void
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${baseUrl}/api/forgejo/v1/version`)
-      if (res.ok) return
+      if (await probe(`${baseUrl}/api/forgejo/v1/version`, async (res) => res.ok)) return
     } catch {
       // try fallback endpoint
       try {
-        const res2 = await fetch(`${baseUrl}/api/v1/version`)
-        if (res2.ok) return
+        if (await probe(`${baseUrl}/api/v1/version`, async (res) => res.ok)) return
       } catch {
         // ignore
       }

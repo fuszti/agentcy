@@ -79,6 +79,15 @@ export async function devInit(flags: Record<string, string | boolean>, deps: Dev
     throw new Error('this checkout already holds a normal office (state/office.json exists, infra/.env has no OFFICE_INSTANCE). ' +
       'Refusing to turn it into a dev instance; use a separate checkout or git worktree for a dev office')
   }
+  // A normal office that is not initialised yet (setup ran, or init failed midway) still has an
+  // infra/.env and maybe data that a dev init would overwrite or orphan.
+  if (!existing && fs.existsSync(path.join(infraDir(root), '.env'))) {
+    throw new Error('infra/.env exists without OFFICE_INSTANCE, so this checkout is set up as a normal office. ' +
+      'Refusing to turn it into a dev instance; use a separate checkout or git worktree, or delete infra/.env if it is a leftover')
+  }
+  if (fs.existsSync(path.join(infraDir(root), 'data'))) {
+    throw new Error('infra/data exists: this checkout has the bind-mounted data of a normal office. Refusing to make it a dev instance')
+  }
   const portBase = numberFlag(flags['port-base'], '--port-base')
 
   let name: string
@@ -125,7 +134,6 @@ export async function devInit(flags: Record<string, string | boolean>, deps: Dev
     const want = devConfig(cfg, name, base)
     writeConfig(root, { ...cfg, mattermostUrl: want.mattermostUrl, forgejoUrl: want.forgejoUrl, tmuxSession: want.tmuxSession })
   }
-
   await deps.bootstrap()
   deps.ensureBrain()
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'office.config.json'), 'utf8')) as OfficeConfig
@@ -144,6 +152,10 @@ export async function devDown(flags: Record<string, string | boolean>, deps: Dev
   const { root } = deps
   requireDevInstance(root, 'down')
   const purge = flags.purge === true
+  // Dev instances keep their data in named volumes; infra/data means a normal office lived here.
+  if (purge && fs.existsSync(path.join(infraDir(root), 'data'))) {
+    throw new Error('office dev down --purge: infra/data exists, which only a normal office has. Refusing to delete anything')
+  }
   deps.assertOwnership()
   await deps.shutdownOffice()
   const r = deps.run('docker', ['compose', ...composeFileArgs(root), 'down', ...(purge ? ['-v'] : [])])

@@ -21,6 +21,24 @@ export function infraDir(root: string): string {
 /** Compose override that swaps the bind-mounted infra/data for named volumes (dev instances). */
 export const DEV_OVERRIDE = 'docker-compose.dev.yml'
 export const DEFAULT_CONTAINER_PREFIX = 'agent-office'
+/** What compose derives from the infra/ directory name; every office created before dev instances uses it. */
+export const DEFAULT_PROJECT = 'infra'
+
+const COMPOSE_VARS = [
+  'COMPOSE_PROJECT_NAME', 'COMPOSE_FILE', 'COMPOSE_PROFILES', 'OFFICE_INSTANCE', 'OFFICE_CONTAINER_PREFIX',
+  'MM_PORT', 'FORGEJO_PORT', 'FORGEJO_SSH_PORT', 'MM_SITE_URL', 'FORGEJO_ROOT_URL', 'BIND_ADDR', 'POSTGRES_PASSWORD',
+]
+
+/**
+ * Environment for every `docker compose` spawn: the shell's, minus the variables the compose
+ * file interpolates. Compose lets the shell override infra/.env, so a shell that sourced one
+ * office's .env would otherwise make another office's commands use its names, ports and data.
+ */
+export function composeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = { ...env }
+  for (const k of COMPOSE_VARS) delete out[k]
+  return out
+}
 
 /** OFFICE_INSTANCE from infra/.env: the dev instance name, or undefined for a normal office. */
 export function instanceName(root: string): string | undefined {
@@ -45,7 +63,8 @@ export function devProject(name: string): string {
 export function composeFileArgs(root: string): string[] {
   const dir = infraDir(root)
   const instance = instanceName(root)
-  const args = instance ? ['-p', devProject(instance)] : []
+  // Always explicit, so a COMPOSE_PROJECT_NAME exported in the shell can never redirect a command to another office.
+  const args = ['-p', instance ? devProject(instance) : readInfraEnv(root).COMPOSE_PROJECT_NAME || DEFAULT_PROJECT]
   args.push('-f', path.join(dir, 'docker-compose.yml'))
   if (instance) args.push('-f', path.join(dir, DEV_OVERRIDE))
   if (fs.existsSync(path.join(dir, LAN_OVERRIDE))) args.push('-f', path.join(dir, LAN_OVERRIDE))
@@ -169,7 +188,13 @@ export type InspectLabel = (container: string) => string | undefined
 
 export function dockerInspectLabel(container: string): string | undefined {
   const r = spawnSync('docker', ['inspect', '--format', `{{index .Config.Labels "${WORKING_DIR_LABEL}"}}`, container], { encoding: 'utf8' })
-  if (r.error || r.status !== 0) return undefined // no such container, or Docker not reachable
+  // Docker not installed: nothing to protect, and the compose call that follows reports it.
+  if (r.error) { if ((r.error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw r.error }
+  if (r.status !== 0) {
+    if (/no such (object|container)/i.test(r.stderr ?? '')) return undefined
+    // Anything else (daemon hiccup, permission) must not read as "no container": that would wave the guard through.
+    throw new Error(`could not check who owns container ${container}: ${(r.stderr ?? '').trim() || `docker inspect exited ${r.status}`}`)
+  }
   const v = r.stdout.trim()
   return v && v !== '<no value>' ? v : undefined
 }

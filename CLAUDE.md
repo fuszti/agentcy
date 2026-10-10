@@ -124,8 +124,8 @@ without redelivering what already went out.
 
 Self-management requests (`office_fork_self`, `office_fork_done`, `office_request_shift`,
 `office_request_hire`, `office_create_project`) go through `src/lib/requests.ts`; some
-auto-approve per `office.config.json`'s `selfManagement`, others need `office approve <id>` from
-the owner in `#office-admin`.
+auto-approve per `office.config.json`'s `selfManagement`, others need the owner to type `approve <id>`
+in `#office-admin` (a chat-ops command, not a CLI one).
 
 ### Identity & security boundaries
 

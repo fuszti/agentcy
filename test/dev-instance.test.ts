@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  assertInitialised, assertInstanceConfig, assertNotDevInstance, assertStackOwnership, composeFileArgs, containerPrefix,
+  assertInitialised, assertInstanceConfig, assertNotDevInstance, assertStackOwnership, composeEnv, composeFileArgs, containerPrefix,
   devConfig, devEnv, devProject, findForeignContainer, instanceName, instanceNameFor, instanceSlug, parseEnv, pickPortBase, startPortBase,
 } from '../src/lib/infra.js'
 import { exportOffice, importOffice } from '../src/lib/migrate.js'
@@ -104,7 +104,7 @@ describe('composeFileArgs and prefix', () => {
     writeEnv('POSTGRES_PASSWORD=p\n')
     expect(instanceName(root)).toBeUndefined()
     expect(containerPrefix(root)).toBe('agent-office')
-    expect(composeFileArgs(root)).toEqual(['-f', path.join(root, 'infra', 'docker-compose.yml')])
+    expect(composeFileArgs(root)).toEqual(['-p', 'infra', '-f', path.join(root, 'infra', 'docker-compose.yml')])
   })
 
   it('dev instance: explicit -p first, dev override after the main file and before the LAN one', () => {
@@ -432,5 +432,38 @@ describe('office dev info / down / reset refusals', () => {
   it('cmdDev dispatches and rejects unknown subcommands', async () => {
     await expect(cmdDev(['bogus'], {}, harness().deps)).rejects.toThrow(/usage: office dev/)
     await expect(cmdDev([], {}, harness().deps)).rejects.toThrow(/usage: office dev/)
+  })
+})
+
+describe('review fixes: traces of a normal office and the compose environment', () => {
+  it('dev init refuses an uninitialised normal office (infra/.env without OFFICE_INSTANCE) and leaves it alone', async () => {
+    writeEnv('POSTGRES_PASSWORD=keep-me\n')
+    const h = harness()
+    await expect(devInit({}, h.deps)).rejects.toThrow(/set up as a normal office/)
+    expect(h.calls).toEqual([])
+    expect(fs.readFileSync(path.join(root, 'infra', '.env'), 'utf8')).toBe('POSTGRES_PASSWORD=keep-me\n')
+    expect(fs.existsSync(path.join(root, 'office.config.json'))).toBe(false)
+  })
+
+  it('dev init and dev down --purge refuse when infra/data exists', async () => {
+    fs.mkdirSync(path.join(root, 'infra', 'data'))
+    const h = harness()
+    await expect(devInit({}, h.deps)).rejects.toThrow(/infra\/data exists/)
+    writeEnv(devEnvText('foo-abc123'))
+    markInitialised()
+    await expect(devDown({ purge: true }, h.deps)).rejects.toThrow(/infra\/data exists/)
+    expect(h.calls).toEqual([])
+    expect(fs.existsSync(path.join(root, 'state', 'office.json'))).toBe(true)
+  })
+
+  it('a normal office always gets an explicit project name', () => {
+    expect(composeFileArgs(root).slice(0, 2)).toEqual(['-p', 'infra'])
+    writeEnv('COMPOSE_PROJECT_NAME=homelab\n')
+    expect(composeFileArgs(root).slice(0, 2)).toEqual(['-p', 'homelab'])
+  })
+
+  it('composeEnv drops every variable the compose file interpolates and keeps the rest', () => {
+    const env = composeEnv({ PATH: '/bin', DOCKER_HOST: 'x', COMPOSE_PROJECT_NAME: 'agentcy-x', OFFICE_CONTAINER_PREFIX: 'agentcy-x', OFFICE_INSTANCE: 'x', MM_PORT: '1', FORGEJO_PORT: '2', FORGEJO_SSH_PORT: '3', BIND_ADDR: '0.0.0.0', POSTGRES_PASSWORD: 'p', MM_SITE_URL: 'u', FORGEJO_ROOT_URL: 'u' })
+    expect(env).toEqual({ PATH: '/bin', DOCKER_HOST: 'x' })
   })
 })

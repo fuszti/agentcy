@@ -15,7 +15,7 @@ import { isProjectMember, listProjects, loadProject, saveProject, validateProjec
 import { claudeLaunchCommand, claudeMcpConfig, claudeSessionExists, claudeSettings, ensureClaudeOnboarded, readStatus, settleClaudeStartup, writeStatus } from '../lib/harness/claude.js'
 import { OpencodeClient, buildOpencodeConfig, forkOpencodeSession, opencodeLaunchCommand, opencodeTranscript } from '../lib/harness/opencode.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
-import { assertInitialised, assertInstanceConfig, assertNotDevInstance, assertStackOwnership, composeFileArgs } from '../lib/infra.js'
+import { assertInitialised, assertInstanceConfig, assertNotDevInstance, assertStackOwnership, composeEnv, composeFileArgs } from '../lib/infra.js'
 import { MOVED_PROMPT, exportOffice, importOffice } from '../lib/migrate.js'
 import { cmdVault } from './vault-cmd.js'
 import { runSetup } from './setup.js'
@@ -103,7 +103,7 @@ async function nextOpencodePort(): Promise<number> {
 
 async function ensureInfra() {
   assertStackOwnership(root)
-  const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit' })
+  const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit', env: composeEnv() })
   if (r.status !== 0) throw new Error('docker compose up failed')
 }
 
@@ -738,7 +738,7 @@ const devDeps: DevDeps = {
   ensureBrain: () => ensureBrain(root),
   shutdownOffice,
   run: (cmd, args, capture) => {
-    const r = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit' })
+    const r = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit', env: composeEnv() })
     return { status: r.status ?? 1, stdout: r.stdout ?? '' }
   },
   portFree: (port) => new Promise(resolve => {
@@ -754,9 +754,10 @@ const devDeps: DevDeps = {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2)
   const { pos, flags } = parseArgs(rest)
-  // Everything except `dev init|reset` (which repair it) must see a config that matches this checkout's dev instance,
+  // Everything except `dev init` (which repairs it) must see a config that matches this checkout's dev instance,
   // else a regenerated default config would make a dev checkout act on the live tmux session "office".
-  if (!(cmd === 'dev' && (pos[0] === 'init' || pos[0] === 'reset'))) assertInstanceConfig(root, cfg)
+  // `dev reset` is not exempt: it shuts the office down through cfg.tmuxSession before it re-inits.
+  if (!(cmd === 'dev' && pos[0] === 'init')) assertInstanceConfig(root, cfg)
   const targets = async () => (flags.all === true || !pos.length ? (await allAgents()).filter(a => a.status === 'hired') : await Promise.all(pos.map(n => agent(slug(n)))))
   switch (cmd) {
     case 'init': await bootstrap(); ensureBrain(root); console.log('office initialised'); break
