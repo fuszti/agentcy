@@ -23,6 +23,8 @@ export const DEV_OVERRIDE = 'docker-compose.dev.yml'
 export const DEFAULT_CONTAINER_PREFIX = 'agent-office'
 /** What compose derives from the infra/ directory name; every office created before dev instances uses it. */
 export const DEFAULT_PROJECT = 'infra'
+/** opencode agents of a dev instance count up from the instance's port base plus this. */
+export const OPENCODE_PORT_OFFSET = 10
 
 const COMPOSE_VARS = [
   'COMPOSE_PROJECT_NAME', 'COMPOSE_FILE', 'COMPOSE_PROFILES', 'OFFICE_INSTANCE', 'OFFICE_CONTAINER_PREFIX',
@@ -140,7 +142,7 @@ export function devConfig(example: OfficeConfig, name: string, base: number): Of
     mattermostUrl: `http://127.0.0.1:${p.mm}`,
     forgejoUrl: `http://127.0.0.1:${p.forgejo}`,
     tmuxSession: `office-${name}`,
-    opencodeBasePort: base + 10,
+    opencodeBasePort: base + OPENCODE_PORT_OFFSET,
     defaults: { ...example.defaults, opencodeModel: example.defaults.helperModel },
     publicUrls: undefined,
   }
@@ -159,6 +161,9 @@ export function assertInstanceConfig(root: string, cfg: OfficeConfig): void {
   if (cfg.tmuxSession !== `office-${name}`) problems.push(`tmuxSession is "${cfg.tmuxSession}", expected "office-${name}"`)
   if (portOf(cfg.mattermostUrl) !== env.MM_PORT) problems.push(`mattermostUrl port is "${portOf(cfg.mattermostUrl)}", expected ${env.MM_PORT}`)
   if (portOf(cfg.forgejoUrl) !== env.FORGEJO_PORT) problems.push(`forgejoUrl port is "${portOf(cfg.forgejoUrl)}", expected ${env.FORGEJO_PORT}`)
+  // The example's 4100 is where a normal office on this machine starts its opencode agents.
+  const opencodeBase = Number(env.MM_PORT) + OPENCODE_PORT_OFFSET
+  if (cfg.opencodeBasePort !== opencodeBase) problems.push(`opencodeBasePort is ${cfg.opencodeBasePort}, expected ${opencodeBase}`)
   if (problems.length) {
     throw new Error(`office.config.json does not match this dev instance (${name}): ${problems.join('; ')}. ` +
       'Refusing to run so it cannot act on another office. Run `office dev init` to repair it.')

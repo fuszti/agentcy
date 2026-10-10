@@ -284,7 +284,7 @@ describe('office dev init', () => {
     await devInit({}, harness().deps)
     const cfg = JSON.parse(fs.readFileSync(path.join(root, 'office.config.json'), 'utf8')) as OfficeConfig
     expect(cfg.team).toBe('mine')
-    expect(cfg.opencodeBasePort).toBe(4321)
+    expect(cfg.opencodeBasePort).toBe(20510) // instance field: repaired, so it cannot collide with another office
     expect(cfg.tmuxSession).toBe('office-foo-abc123')
     expect(cfg.mattermostUrl).toBe('http://127.0.0.1:20500')
   })
@@ -465,5 +465,24 @@ describe('review fixes: traces of a normal office and the compose environment', 
   it('composeEnv drops every variable the compose file interpolates and keeps the rest', () => {
     const env = composeEnv({ PATH: '/bin', DOCKER_HOST: 'x', COMPOSE_PROJECT_NAME: 'agentcy-x', OFFICE_CONTAINER_PREFIX: 'agentcy-x', OFFICE_INSTANCE: 'x', MM_PORT: '1', FORGEJO_PORT: '2', FORGEJO_SSH_PORT: '3', BIND_ADDR: '0.0.0.0', POSTGRES_PASSWORD: 'p', MM_SITE_URL: 'u', FORGEJO_ROOT_URL: 'u' })
     expect(env).toEqual({ PATH: '/bin', DOCKER_HOST: 'x' })
+  })
+})
+
+describe('opencode port base belongs to the instance', () => {
+  it('assertInstanceConfig rejects the default opencodeBasePort', () => {
+    writeEnv(devEnvText('foo-abc123'))
+    const good = devConfig(example, 'foo-abc123', 20100)
+    expect(() => assertInstanceConfig(root, good)).not.toThrow()
+    expect(() => assertInstanceConfig(root, { ...good, opencodeBasePort: example.opencodeBasePort })).toThrow(/opencodeBasePort is 4100, expected 20110/)
+  })
+
+  it('dev init on an initialised instance repairs opencodeBasePort in a regenerated config', async () => {
+    writeEnv(devEnvText('foo-abc123'))
+    markInitialised()
+    fs.copyFileSync(path.join(root, 'office.config.example.json'), path.join(root, 'office.config.json'))
+    await devInit({}, harness().deps)
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, 'office.config.json'), 'utf8')) as OfficeConfig
+    expect(cfg.opencodeBasePort).toBe(20110)
+    expect(() => assertInstanceConfig(root, cfg)).not.toThrow()
   })
 })

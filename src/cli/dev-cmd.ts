@@ -132,7 +132,7 @@ export async function devInit(flags: Record<string, string | boolean>, deps: Dev
     const cfgPath = path.join(root, 'office.config.json')
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as OfficeConfig
     const want = devConfig(cfg, name, base)
-    writeConfig(root, { ...cfg, mattermostUrl: want.mattermostUrl, forgejoUrl: want.forgejoUrl, tmuxSession: want.tmuxSession })
+    writeConfig(root, { ...cfg, mattermostUrl: want.mattermostUrl, forgejoUrl: want.forgejoUrl, tmuxSession: want.tmuxSession, opencodeBasePort: want.opencodeBasePort })
   }
   await deps.bootstrap()
   deps.ensureBrain()

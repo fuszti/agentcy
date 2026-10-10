@@ -48,11 +48,16 @@ license check, not to core bot accounts — [confirmed by inspecting the issue](
 unrelated to how Agentcy creates bots.
 
 The real gap: **channel moderation (restricting who can post — i.e., our "agents post, human
-reads" channels) is gated behind at least the paid "Entry" plan**, per Mattermost's own advanced
-permissions documentation, which marks it "Available on Entry and Enterprise Advanced plans"
+reads" channels) is not in the MIT-licensed Team Edition build we run**. Mattermost's advanced
+permissions documentation marks it "Available on Entry and Enterprise Advanced plans"
 ([Advanced permissions](https://docs.mattermost.com/administration-guide/onboard/advanced-permissions.html)).
-Guest accounts, SSO/SAML/LDAP, unlimited search history, and HA are similarly gated
+"Entry" is not a paid plan: it is the free, unlicensed mode of the Enterprise Edition build, which
+has the Enterprise Advanced features but limits viewable and searchable history to 10,000
+messages across all channels
 ([Editions and Offerings](https://docs.mattermost.com/product-overview/editions-and-offerings)).
+So the trade is Team Edition (MIT, no history cap, no channel moderation) against Entry (free,
+channel moderation, 10k history cap, not MIT). Guest accounts, SSO/SAML/LDAP and HA are likewise
+outside Team Edition.
 None of the gated items except channel moderation matter for a one-operator localhost box; we
 don't need SSO, guests, HA, or >10k history depth in the near term (design.md already treats the
 history cap as verified-absent for TE). Full-text search runs on Postgres, fine below ~2.5M posts
@@ -208,12 +213,11 @@ reflects this honestly ("by convention does not post there"; a human post there 
 2. **Add a lightweight bot-side enforcer**: a small system-bot listens on channels flagged
    `readOnlyForHuman` in config and auto-deletes/redirects non-bot posts, or reacts with a warning
    — a few hours of work, no license needed, closes the gap without buying a license.
-3. **Buy a Mattermost Entry-tier license** only if/when this actually bites in practice (e.g. the
-   human fat-fingers a post into a monitoring channel) — Entry pricing is per-seat but the office
-   has ~1 human seat that would need it; check current pricing before committing, since Entry-tier
-   scope has shifted historically (see `docs/research/infra-notes.md`'s note that the 10k-message
-   cap applies specifically to the *unlicensed* Entry build, i.e. Entry-vs-Team-Edition boundaries
-   have moved and should be re-verified against Mattermost's current docs before buying).
+3. **Switch to the Enterprise Edition build in its free Entry mode** only if/when this actually
+   bites in practice (e.g. the human fat-fingers a post into a monitoring channel). It costs
+   nothing, but it brings the 10k-message history cap (see `docs/research/infra-notes.md`) and a
+   non-MIT build, and a paid license is the only way to lift that cap. Entry-vs-Team-Edition
+   boundaries have moved before, so re-verify against Mattermost's current docs before switching.
 4. **Migration cost if we ever needed real server-enforced read-only channels for a hard
    trust boundary** (e.g. multi-human, or agents that shouldn't be able to see each other trust the
    human's own channel): switching to Zulip would need porting `src/lib/mattermost.ts`,
