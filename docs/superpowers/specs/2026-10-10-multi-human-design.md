@@ -67,7 +67,7 @@ Findings the design depends on:
 ```
 
 `src/lib/members.ts` (new) owns reading, writing and validating it, and exposes
-`humanRoster(cfg, secrets)`: the owner plus all members that are not removed, each with a role.
+`humanRoster(owner, members)`: the owner plus all members that are not removed, each with a role.
 Everything that asks "is this a person, and which one" goes through it.
 
 A removed member stays in the file with `removedAt` set. Usernames are never reused, the same
@@ -75,7 +75,7 @@ rule agents follow.
 
 ### 2. Mattermost roles
 
-`ensureChatRoles()` in `src/cli/bootstrap.ts`, called from `bootstrap()` and `ensureInfra()`, so
+`ensureChatRoles()` in `src/lib/chat-roles.ts`, called through `ensureOfficePolicies()` from `bootstrap()` and `ensureInfra()`, so
 `office init` and `office up` converge every office to the same state. It is idempotent and runs
 in this order:
 
@@ -130,7 +130,7 @@ Rules:
 - The shared ticket repo `office/tasks` is never granted.
 - Repos are created `private: false` and the org `visibility: 'public'` today
   (`src/lib/forgejo.ts`), so any signed-in user can read all of them. New repos become private and
-  the org becomes private. `ensureForgejoPrivacy()` in bootstrap sets existing project repos, the
+  the org becomes private. `ensureForgejoPrivacy()` sets existing project repos, the
   ticket repo and the org to private. Agents keep access through the `agents` team, the owner as
   admin.
 - To verify on a dev office during implementation: a collaborator who is not an org member can
@@ -165,7 +165,7 @@ recognises a new member without a restart. `office invite`, `grant`, `revoke` an
 queue a signed `<office-system>` notice to every agent saying who joined or left and on which
 projects.
 
-`office_who` returns the members with their role and projects, so an agent can check whether a
+`office_directory` returns the members with their role and projects, so an agent can check whether a
 request is inside the member's projects.
 
 ### 6. Agent rules
@@ -179,7 +179,7 @@ request is inside the member's projects.
 - A member asking about a project they do not belong to is told to ask the owner.
 
 Generated instruction files are rewritten at session start, so already running sessions learn
-about members from the system notice and `office_who`.
+about members from the system notice and `office_directory`.
 
 ## Migration of an existing office
 
