@@ -196,6 +196,16 @@ export class ForgejoClient {
   }
 
 
+  /** Read one account as an admin; undefined when it does not exist. */
+  async adminGetUser(username: string): Promise<{ login: string; email: string; is_admin: boolean; prohibit_login: boolean } | undefined> {
+    try {
+      return await this.request('GET', `/users/${encodeURIComponent(username)}`)
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return undefined
+      throw err
+    }
+  }
+
   async listTokensForUser(
     username: string,
     password: string,
@@ -353,6 +363,20 @@ export class ForgejoClient {
     const team = teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase())
     if (!team) throw new Error(`team ${teamName} not found in org ${org}`)
     await this.request('PUT', `/teams/${team.id}/members/${encodeURIComponent(username)}`)
+  }
+
+  /** True when the user is in the named org team; a missing team or user counts as no. */
+  async isTeamMember(org: string, teamName: string, username: string): Promise<boolean> {
+    const teams = await this.request<{ id: number; name: string }[]>('GET', `/orgs/${encodeURIComponent(org)}/teams`)
+    const team = teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase())
+    if (!team) return false
+    try {
+      await this.request('GET', `/teams/${team.id}/members/${encodeURIComponent(username)}`)
+      return true
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return false
+      throw err
+    }
   }
 
   async createOrgRepo(org: string, name: string, input: CreateOrgRepoInput = {}): Promise<{ id: number; name: string; html_url: string }> {

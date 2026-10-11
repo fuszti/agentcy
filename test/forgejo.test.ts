@@ -201,6 +201,30 @@ describe('ForgejoClient privacy and collaborators', () => {
     expect(reqs[2].body).toEqual({ password: 'pw2', must_change_password: false, login_name: 'ada', source_id: 0 })
   })
 
+  it('adminGetUser reads an account, or undefined when it is missing', async () => {
+    const reqs = capture(() => jsonResponse({ login: 'alice', email: 'a@office.local', is_admin: false, prohibit_login: false }))
+    expect(await new ForgejoClient('http://fj', 'tok').adminGetUser('alice')).toMatchObject({ login: 'alice', is_admin: false })
+    expect(reqs[0]).toMatchObject({ method: 'GET', url: 'http://fj/api/v1/users/alice' })
+    capture(() => jsonResponse({ message: 'nope' }, 404))
+    expect(await new ForgejoClient('http://fj', 'tok').adminGetUser('ghost')).toBeUndefined()
+    capture(() => jsonResponse({ message: 'boom' }, 500))
+    await expect(new ForgejoClient('http://fj', 'tok').adminGetUser('x')).rejects.toThrow(/500/)
+  })
+
+  it('isTeamMember is true on 204, false on 404 or a missing team, and rethrows other errors', async () => {
+    const reply = (member: number) => (r: { url: string }) =>
+      r.url.endsWith('/orgs/office/teams') ? jsonResponse([{ id: 7, name: 'Agents' }]) : jsonResponse({ message: 'x' }, member)
+    const reqs = capture(reply(204))
+    expect(await new ForgejoClient('http://fj', 'tok').isTeamMember('office', 'agents', 'alice')).toBe(true)
+    expect(reqs[1]).toMatchObject({ method: 'GET', url: 'http://fj/api/v1/teams/7/members/alice' })
+    capture(reply(404))
+    expect(await new ForgejoClient('http://fj', 'tok').isTeamMember('office', 'agents', 'alice')).toBe(false)
+    capture(reply(500))
+    await expect(new ForgejoClient('http://fj', 'tok').isTeamMember('office', 'agents', 'alice')).rejects.toThrow(/500/)
+    capture(() => jsonResponse([]))
+    expect(await new ForgejoClient('http://fj', 'tok').isTeamMember('office', 'agents', 'alice')).toBe(false)
+  })
+
   it('issueAuthor returns the poster login, or undefined when the issue cannot be read', async () => {
     capture(() => jsonResponse({ number: 7, user: { login: 'alice' } }))
     expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 7)).toBe('alice')

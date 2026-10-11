@@ -177,6 +177,7 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
 
     it('the member reaches only their project repo', async () => {
       // The invite forces a password change at first login, which blocks the API; lift it to test access.
+      expect((await fjAs(username, gitPassword)('/user')).status).toBe(403)
       await fjAdmin.adminResetPassword(username, gitPassword, false)
       const fj = fjAs(username, gitPassword)
       expect((await fj(`/repos/${config.forgejoOrg}/${web}`)).status).toBe(200)
@@ -204,6 +205,31 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
       expect(files.length).toBe(1)
       expect(fs.readFileSync(path.join(inbox, files[0]), 'utf8')).toContain(`@${username} (Integration Member) joined the office`)
     })
+
+    it('re-running after a half-finished invite adopts the account, and refuses accounts that are not ours', async () => {
+      const left = `re-${tag}`.slice(0, 22)
+      await mmAdmin.createUser({ username: left, email: `${left}@office.local`, password: `It-${tag}-left-Zq9` })
+      printed.length = 0
+      await cmdInvite([left], { projects: web }, deps)
+      expect(loadMembers(repoRoot()).filter(m => m.username === left)).toHaveLength(1)
+      const res = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: left, password: passwordAfter('chat') }) })
+      expect(res.status).toBe(200)
+
+      const other = `ot-${tag}`.slice(0, 22)
+      await mmAdmin.createUser({ username: other, email: `someone-else-${tag}@example.com`, password: `It-${tag}-other-Zq9` })
+      await expect(cmdInvite([other], { projects: web }, deps)).rejects.toThrow(/already exists and was not created by `office invite`/)
+      expect(loadMembers(repoRoot()).some(m => m.username === other)).toBe(false)
+
+      // A Forgejo account that is an administrator is never adopted, even with the matching email.
+      const admin = `fa-${tag}`.slice(0, 22)
+      await fjAdmin.createUser({ username: admin, email: `${admin}@office.local`, password: `It-${tag}-fa-Zq9`, mustChangePassword: false })
+      await fetch(`${config.forgejoUrl}/api/v1/admin/users/${admin}`, {
+        method: 'PATCH', headers: { Authorization: `token ${(await loadSecrets())?.forgejo.adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin: true, login_name: admin, source_id: 0 }),
+      })
+      await expect(cmdInvite([admin], { projects: web }, deps)).rejects.toThrow(/already exists and was not created by `office invite`/)
+      expect(loadMembers(repoRoot()).some(m => m.username === admin)).toBe(false)
+    }, 90_000)
 
     it('uninvite locks the member out of both systems', async () => {
       await cmdUninvite([username], deps)

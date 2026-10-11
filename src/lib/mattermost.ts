@@ -129,7 +129,7 @@ export class MattermostClient {
     return this.request('GET', `/users/${id}`)
   }
 
-  async getUserByUsername(username: string): Promise<{ id: string; username: string; email: string; roles: string }> {
+  async getUserByUsername(username: string): Promise<{ id: string; username: string; email: string; roles: string; is_bot?: boolean; delete_at?: number }> {
     return this.request('GET', `/users/username/${encodeURIComponent(username)}`)
   }
 
