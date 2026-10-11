@@ -51,8 +51,10 @@ export interface RoleClient {
 }
 
 /**
- * Converge the chat roles. Idempotent. Bots are promoted and team_admin is verified before
- * team_user is tightened: a bot left on plain team_user would lose every channel.
+ * Converge the chat roles. Idempotent. Order matters:
+ *   1. trim team_admin and read it back, so no bot is promoted into the stock admin rights;
+ *   2. promote the bots and verify it;
+ *   3. only then tighten team_user: a bot left on plain team_user would lose every channel.
  */
 export async function ensureChatRoles(mm: RoleClient, teamId: string, botUserIds: string[]): Promise<void> {
   const isAdmin = async (id: string): Promise<boolean> => {
@@ -62,7 +64,6 @@ export async function ensureChatRoles(mm: RoleClient, teamId: string, botUserIds
       throw new Error(`chat roles: bot ${id} is not in the team (${(e as Error).message}); team_user left unchanged`)
     }
   }
-  for (const id of botUserIds) if (!(await isAdmin(id))) await mm.setTeamAdmin(teamId, id)
 
   const admin = await mm.getRoleByName('team_admin')
   const user = await mm.getRoleByName('team_user')
@@ -72,6 +73,10 @@ export async function ensureChatRoles(mm: RoleClient, teamId: string, botUserIds
   const adminNow = await mm.getRoleByName('team_admin')
   const missing = AGENT_GRANTED.filter(p => !adminNow.permissions.includes(p))
   if (missing.length) throw new Error(`chat roles: team_admin is missing ${missing.join(', ')} after the update; team_user left unchanged`)
+  const kept = TEAM_ADMIN_REMOVED.filter(p => adminNow.permissions.includes(p))
+  if (kept.length) throw new Error(`chat roles: team_admin still has ${kept.join(', ')} after the update; team_user left unchanged`)
+
+  for (const id of botUserIds) if (!(await isAdmin(id))) await mm.setTeamAdmin(teamId, id)
   for (const id of botUserIds) {
     if (!(await isAdmin(id))) throw new Error(`chat roles: bot ${id} is not a team admin after the update; team_user left unchanged`)
   }

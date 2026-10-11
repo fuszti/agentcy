@@ -84,10 +84,10 @@ describe('planRoleChanges', () => {
 })
 
 describe('ensureChatRoles', () => {
-  it('promotes the bots, then updates team_admin, then team_user, in that order', async () => {
+  it('updates team_admin, then promotes the bots, then updates team_user, in that order', async () => {
     const f = fake()
     await ensureChatRoles(f.mm, 't1', ['b1', 'b2'])
-    expect(f.calls).toEqual(['admin b1', 'admin b2', 'patch r-admin', 'patch r-user'])
+    expect(f.calls).toEqual(['patch r-admin', 'admin b1', 'admin b2', 'patch r-user'])
     expect(f.roles.team_user.permissions.sort()).toEqual(['playbook_private_create', 'playbook_public_create', 'view_team'])
     for (const p of AGENT_GRANTED) expect(f.roles.team_admin.permissions).toContain(p)
     expect(f.roles.team_admin.permissions).not.toContain('manage_team')
@@ -112,7 +112,7 @@ describe('ensureChatRoles', () => {
   it('leaves team_user untouched when a bot is not in the team', async () => {
     const f = fake({ inTeam: ['b1'] })
     await expect(ensureChatRoles(f.mm, 't1', ['b1', 'b2'])).rejects.toThrow(/bot b2 is not in the team.*team_user left unchanged/s)
-    expect(f.calls.filter(c => c.startsWith('patch'))).toEqual([])
+    expect(f.calls).not.toContain('patch r-user')
     expect(f.roles.team_user.permissions).toEqual(STOCK_USER)
   })
 
@@ -126,6 +126,19 @@ describe('ensureChatRoles', () => {
   it('leaves team_user untouched when Mattermost ignores the team_admin update', async () => {
     const f = fake({ ignorePatchOf: 'r-admin' })
     await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin is missing .*list_team_channels.*team_user left unchanged/s)
+    expect(f.calls).not.toContain('patch r-user')
+    expect(f.calls.filter(c => c.startsWith('admin'))).toEqual([])
+  })
+
+  it('promotes no bot when the team_admin update leaves the removed permissions in place', async () => {
+    const f = fake()
+    f.mm.patchRolePermissions = async (id, permissions) => {
+      f.calls.push(`patch ${id}`)
+      const role = Object.values(f.roles).find(r => r.id === id)
+      if (role && id === 'r-admin') role.permissions = [...new Set([...role.permissions, ...permissions])]
+    }
+    await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin still has .*manage_team.*team_user left unchanged/s)
+    expect(f.calls.filter(c => c.startsWith('admin'))).toEqual([])
     expect(f.calls).not.toContain('patch r-user')
   })
 

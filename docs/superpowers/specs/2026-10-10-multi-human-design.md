@@ -79,12 +79,14 @@ rule agents follow.
 `office init` and `office up` converge every office to the same state. It is idempotent and runs
 in this order:
 
-1. Promote every bot of the office (all agents and the `office` system bot) to team admin.
-2. Add the public-channel permissions to `team_admin`.
-3. Remove from `team_admin` what agents could not do before (team management, role management,
-   removing users from the team, deleting other users' posts, channel conversion, managing other
-   users' webhooks and slash commands). The owner is a system admin and is not affected.
-4. Read back `team_admin` and each bot's membership. Stop with an error if anything is missing.
+1. Add the public-channel permissions to `team_admin` and remove from it what agents could not do
+   before (team management, role management, removing users from the team, deleting other users'
+   posts, channel conversion, managing other users' webhooks and slash commands). The owner is a
+   system admin and is not affected.
+2. Read `team_admin` back. Stop with an error if a granted permission is missing or a removed one
+   is still there. No bot has been promoted at this point.
+3. Promote every bot of the office (all agents and the `office` system bot) to team admin.
+4. Read back each bot's membership and admin flag. Stop with an error if one is not a team admin.
 5. Only then remove the seven permissions from `team_user`.
 6. Read back `team_user` and stop with an error if a permission is still there.
 
@@ -92,7 +94,7 @@ The permission lists are constants next to a pure function `planRoleChanges(curr
 returns the add and remove sets, so the plan is unit-tested without Docker.
 `createAgentIdentity()` promotes each newly hired bot.
 
-If step 4 fails, `team_user` is untouched and the office keeps working as before. `office invite`
+If step 2 or 4 fails, `team_user` is untouched and the office keeps working as before. `office invite`
 refuses to run until `ensureChatRoles()` has succeeded.
 
 ### 3. Invitations
