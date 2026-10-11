@@ -101,11 +101,17 @@ async function nextOpencodePort(): Promise<number> {
   return p
 }
 
-async function ensureInfra() {
+/** `strictPolicies`: a failed policy step aborts (`up`); otherwise it only warns and the office runs as before (`start`). */
+async function ensureInfra(opts: { strictPolicies: boolean }) {
   assertStackOwnership(root)
   const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit', env: composeEnv() })
   if (r.status !== 0) throw new Error('docker compose up failed')
-  await ensureOfficePolicies()
+  try {
+    await ensureOfficePolicies()
+  } catch (e) {
+    if (opts.strictPolicies) throw e
+    console.error(`warning: office policies were not applied: ${(e as Error).message}. The office runs as before; invited members are refused until \`office up\` succeeds.`)
+  }
 }
 
 // ------------------------------------------------------------------ start / stop
@@ -762,7 +768,7 @@ async function main() {
   const targets = async () => (flags.all === true || !pos.length ? (await allAgents()).filter(a => a.status === 'hired') : await Promise.all(pos.map(n => agent(slug(n)))))
   switch (cmd) {
     case 'init': await bootstrap(); ensureBrain(root); console.log('office initialised'); break
-    case 'up': await ensureInfra(); break
+    case 'up': await ensureInfra({ strictPolicies: true }); break
     case 'setup': await runSetup(root, flags); break
     case 'dev': await cmdDev(pos, flags, devDeps); break
     case 'vault': await cmdVault(root, cfg.resourceGroups, pos); break
@@ -789,7 +795,7 @@ async function main() {
     case 'import': await cmdImport(pos, flags); break
     case 'shutdown': assertInitialised(root, 'shutdown'); await shutdownOffice(); break
     case 'hire': await cmdHire(pos, flags); break
-    case 'start': await ensureInfra(); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
+    case 'start': await ensureInfra({ strictPolicies: false }); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
     case 'stop': for (const a of await targets()) await stopAgent(a); break
     case 'restart': for (const a of await targets()) { await stopAgent(a); await startAgent(await agent(a.name)) } break
     case 'status': await cmdStatus(flags); break

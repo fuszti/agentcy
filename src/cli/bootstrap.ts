@@ -421,7 +421,6 @@ async function ensureForgejoOrgAndRepo(
   ])
 }
 
-/** Idempotent bootstrap of the whole local office. */
 /**
  * Converge who can see what: chat roles (agents are trimmed team admins, plain team users only see
  * channels they were added to) and Forgejo privacy (org and repos private). Idempotent; run by
@@ -448,6 +447,7 @@ export async function ensureOfficePolicies(): Promise<void> {
   }
 }
 
+/** Idempotent bootstrap of the whole local office. */
 export async function bootstrap(): Promise<void> {
   assertStackOwnership(repoRoot())
   await ensureInfraEnv()
