@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { ForgejoClient, ensureForgejoPrivacy, type PrivacyClient } from '../src/lib/forgejo.js'
+import { ForgejoClient, ensureForgejoPrivacy, forgejoPrivacyReady, type PrivacyClient } from '../src/lib/forgejo.js'
 
 function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(status === 204 || status === 205 ? null : JSON.stringify(body), {
@@ -261,5 +261,19 @@ describe('ensureForgejoPrivacy', () => {
     const f = fakeFj(undefined, [])
     expect(await ensureForgejoPrivacy(f.fj, 'office')).toEqual({ org: false, repos: [] })
     expect(f.calls).toEqual([])
+  })
+})
+
+describe('forgejoPrivacyReady', () => {
+  const fj = (visibility: string, repos: boolean[]) => ({
+    getOrg: async () => ({ visibility }),
+    listOrgRepos: async () => repos.map((p, i) => ({ name: `r${i}`, private: p })),
+  })
+  it('is true for a private org with private repos', async () => { expect(await forgejoPrivacyReady(fj('private', [true, true]), 'o')).toBe(true) })
+  it('is false for a public org', async () => { expect(await forgejoPrivacyReady(fj('public', [true]), 'o')).toBe(false) })
+  it('is false when one repo is public', async () => { expect(await forgejoPrivacyReady(fj('private', [true, false]), 'o')).toBe(false) })
+  it('is false on error or a missing org', async () => {
+    expect(await forgejoPrivacyReady({ getOrg: async () => { throw new Error('x') }, listOrgRepos: async () => [] }, 'o')).toBe(false)
+    expect(await forgejoPrivacyReady({ getOrg: async () => undefined, listOrgRepos: async () => [] }, 'o')).toBe(false)
   })
 })

@@ -17,7 +17,7 @@ export interface MemberDeps {
   agentNames(): Promise<string[]>
   hiredAgents(): Promise<string[]>
   projects(): Promise<ProjectRecord[]>
-  /** True when plain team users are restricted (chatRolesReady). */
+  /** True when plain team users are restricted (chatRolesReady) and the Forgejo org and all repos are private (forgejoPrivacyReady). */
   rolesReady(): Promise<boolean>
   chat: {
     /** Create the account, or adopt an existing one by resetting its password. Returns the user id. */
@@ -47,7 +47,7 @@ type Flags = Record<string, string | boolean>
 const INVITE_USAGE = 'usage: office invite <username> --projects a,b [--channels x,y] [--name "Display Name"] [--email e]'
 const MEMBER_USAGE = 'usage: office member list | grant <username> --projects a,b [--channels x,y] | revoke <username> --projects a [--channels x] | reset-password <username>'
 const EMAIL_RE = /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/
-const ROLES_NOT_READY = 'chat roles are not set up, so a member would see every channel. Run `office up` and try again'
+const ROLES_NOT_READY = 'the office policies are not applied (chat roles or private repos), so a member could see too much. Run `office up` and try again'
 
 const text = (v: string | boolean | undefined): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
 const uniq = (xs: string[]): string[] => [...new Set(xs)]

@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto'
 import { listAgents, loadAgent, loadSecrets } from '../lib/config.js'
 import { chatRolesReady } from '../lib/chat-roles.js'
-import { ForgejoClient } from '../lib/forgejo.js'
+import { ForgejoClient, forgejoPrivacyReady } from '../lib/forgejo.js'
 import { queueSystemPrompt } from '../lib/inbox.js'
 import { MattermostClient } from '../lib/mattermost.js'
 import { listProjects } from '../lib/projects.js'
@@ -38,7 +38,7 @@ export async function realMemberDeps(root: string, cfg: OfficeConfig): Promise<M
     agentNames: async () => (await agents()).map(a => a.name),
     hiredAgents: async () => (await agents()).filter(a => a.status === 'hired').map(a => a.name),
     projects: () => listProjects(root),
-    rolesReady: () => chatRolesReady(mm),
+    rolesReady: async () => (await chatRolesReady(mm)) && (await forgejoPrivacyReady(fj, cfg.forgejoOrg)),
     chat: {
       ensureUser: async (u) => {
         try {

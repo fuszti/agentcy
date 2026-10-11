@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { bootstrap, createAgentIdentity, ensureOfficePolicies, retireAgentIdentity } from '../../src/cli/bootstrap.js'
-import { loadConfig, loadSecrets } from '../../src/lib/config.js'
+import { agentStateDir, loadAgent, loadConfig, loadSecrets } from '../../src/lib/config.js'
 import { MEMBER_DENIED, chatRolesReady } from '../../src/lib/chat-roles.js'
 import { MattermostClient } from '../../src/lib/mattermost.js'
 import { ForgejoClient } from '../../src/lib/forgejo.js'
@@ -14,7 +14,7 @@ import { saveProject } from '../../src/lib/projects.js'
 import { classifyPost, channelTypeOf, findHuman } from '../../src/mcp/policy.js'
 import { rosterCache } from '../../src/lib/members.js'
 import { prepareAgentGitIdentity, workspaceDir } from '../../src/lib/workspace.js'
-import type { AgentRecord, ChatPost } from '../../src/lib/types.js'
+import type { ChatPost } from '../../src/lib/types.js'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import { requireDevInstance } from '../helpers/dev-instance.js'
@@ -29,8 +29,6 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
   let botMm: MattermostClient
   let botFj: ForgejoClient
   let botToken: string
-  let botFjToken = ''
-  let botMmId = ''
   const botName = `itest-m-${tag}`
 
   /** A plain team user, the way `office invite` creates one, logged in with its own session. */
@@ -55,8 +53,6 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
     fjAdmin = new ForgejoClient(config.forgejoUrl, secrets.forgejo.adminToken)
     const bot = await createAgentIdentity(botName, 'Members Test Bot', 'bot for the members integration test')
     botToken = bot.mattermost.token
-    botFjToken = bot.forgejo.token
-    botMmId = bot.mattermost.userId
     botMm = new MattermostClient(config.mattermostUrl, botToken)
     botFj = new ForgejoClient(config.forgejoUrl, bot.forgejo.token)
   }, 300_000)
@@ -294,22 +290,21 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
     }, 60_000)
 
     it('an agent clones a private project repo with its own credentials, the way the harness does', async () => {
-      const rec: AgentRecord = {
-        name: botName, displayName: 'Members Test Bot', harness: 'opencode', model: 'x', status: 'hired', pastSessions: [], chrome: false,
-        mattermost: { userId: botMmId, token: botToken }, forgejo: { token: botFjToken }, createdAt: new Date().toISOString(),
-      }
+      const rec = await loadAgent(botName)
+      if (!rec) throw new Error('the test bot has no agent record')
       const ws = workspaceDir(repoRoot(), botName)
       fs.mkdirSync(ws, { recursive: true })
       execFileSync('git', ['init', '-q'], { cwd: ws })
       const prefix = await prepareAgentGitIdentity(repoRoot(), config, rec)
       const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-'))
       try {
-        const out = execFileSync('bash', ['-c', `${prefix} GIT_TERMINAL_PROMPT=0 git clone ${config.forgejoUrl}/${config.forgejoOrg}/${web}.git ${path.join(dest, 'web')}`], { encoding: 'utf8', stdio: 'pipe' })
-        expect(out).toBeDefined()
+        const remote = `${config.forgejoUrl.replace(/\/$/, '')}/${config.forgejoOrg}/${web}.git`
+        execFileSync('bash', ['-c', `${prefix} GIT_TERMINAL_PROMPT=0 git clone ${remote} ${path.join(dest, 'web')}`], { cwd: ws, encoding: 'utf8', stdio: 'pipe' })
         expect(fs.existsSync(path.join(dest, 'web', '.git'))).toBe(true)
       } finally {
         fs.rmSync(dest, { recursive: true, force: true })
         fs.rmSync(ws, { recursive: true, force: true })
+        fs.rmSync(path.join(agentStateDir(botName), 'git-credentials'), { force: true })
       }
     }, 60_000)
 

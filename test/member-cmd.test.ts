@@ -142,9 +142,9 @@ describe('office invite', () => {
     })
   }
 
-  it('refuses while the chat roles are not set up', async () => {
+  it('refuses while the office policies are not applied', async () => {
     const h = harness({ rolesReady: false })
-    await expect(cmdInvite(['alice'], { projects: 'web' }, h.deps)).rejects.toThrow(/chat roles are not set up.*office up/s)
+    await expect(cmdInvite(['alice'], { projects: 'web' }, h.deps)).rejects.toThrow(/policies are not applied.*office up/s)
     expect(h.calls).toEqual([])
   })
 

@@ -680,6 +680,16 @@ export interface PrivacyClient {
   setRepoPrivate(owner: string, repo: string): Promise<void>
 }
 
+/** True only when the org exists, is private and every repo in it is private. Any error counts as not ready. */
+export async function forgejoPrivacyReady(fj: Pick<PrivacyClient, 'getOrg' | 'listOrgRepos'>, org: string): Promise<boolean> {
+  try {
+    if ((await fj.getOrg(org))?.visibility !== 'private') return false
+    return (await fj.listOrgRepos(org)).every(r => r.private)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Make the office org and all its repos private, so an invited member (a per-repo collaborator)
  * sees only the repos they were given. Agents keep access through the `agents` team. Idempotent;
