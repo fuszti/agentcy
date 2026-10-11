@@ -253,8 +253,10 @@ describe('ForgejoClient privacy and collaborators', () => {
   })
 
   it('issueInfo returns the poster and creation time, or undefined when the issue cannot be read or lacks them', async () => {
+    capture(() => jsonResponse({ number: 7, user: { login: 'alice', id: 41 }, created_at: '2026-10-11T09:00:00Z', updated_at: '2026-10-11T09:05:00Z' }))
+    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toEqual({ login: 'alice', id: 41, createdAt: '2026-10-11T09:00:00Z', updatedAt: '2026-10-11T09:05:00Z' })
     capture(() => jsonResponse({ number: 7, user: { login: 'alice', id: 41 }, created_at: '2026-10-11T09:00:00Z' }))
-    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toEqual({ login: 'alice', id: 41, createdAt: '2026-10-11T09:00:00Z' })
+    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toBeUndefined()
     capture(() => jsonResponse({ number: 7, user: { login: 'alice' } }))
     expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toBeUndefined()
     capture(() => jsonResponse({ message: 'nope' }, 404))

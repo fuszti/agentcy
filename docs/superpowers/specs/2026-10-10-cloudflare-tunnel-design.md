@@ -140,8 +140,11 @@ settings are verified on a dev office during implementation.
   output before this change, for a normal and a dev instance.
 - Dev office: the two checks in section 4, with the hardening variables set by hand through the
   same function the wizard calls.
-- Manual, by the owner on the home server: the wizard end to end with a real tunnel, login from a
-  browser and from the iOS app, a `git clone` over HTTPS.
+- Manual, by the owner on their own office: the wizard end-to-end with a real tunnel, login from
+  a browser and from the iOS app, a `git clone` over HTTPS. This is the one check a dev office
+  cannot cover (`office setup` refuses on a dev instance, and a real tunnel needs the owner's
+  Cloudflare account and domain), so the owner runs it, never an agent, after the dev-office
+  checks above pass.
 - `npm run check` passes.
 
 ## Out of scope

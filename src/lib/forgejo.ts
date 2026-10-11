@@ -123,7 +123,9 @@ export interface Notification {
 /** Forgejo REST client. */
 /** The Forgejo account behind a comment or an issue, and when it was created. */
 export interface TicketActor { login: string; id: number; createdAt: string }
-interface RawActor { user?: { login?: string; id?: number }; created_at?: string }
+/** An issue's author plus when the issue last changed (any comment, assignment, label or edit moves it). */
+export interface IssueActor extends TicketActor { updatedAt: string }
+interface RawActor { user?: { login?: string; id?: number }; created_at?: string; updated_at?: string }
 function toActor(raw: RawActor): TicketActor | undefined {
   const { user, created_at } = raw
   return user?.login && typeof user.id === 'number' && created_at ? { login: user.login, id: user.id, createdAt: created_at } : undefined
@@ -452,9 +454,11 @@ export class ForgejoClient {
   }
 
   /** Who opened an issue or pull request and when (the issues endpoint serves both). */
-  async issueInfo(owner: string, repo: string, number: number): Promise<TicketActor | undefined> {
+  async issueInfo(owner: string, repo: string, number: number): Promise<IssueActor | undefined> {
     try {
-      return toActor(await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`))
+      const raw = await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`)
+      const actor = toActor(raw)
+      return actor && raw.updated_at ? { ...actor, updatedAt: raw.updated_at } : undefined
     } catch {
       return undefined
     }

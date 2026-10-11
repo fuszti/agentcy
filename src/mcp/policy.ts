@@ -63,24 +63,34 @@ export function findHuman(humans: Human[], who: { userId?: string; username?: st
 
 /** How close a comment or an issue's creation must be to the notification to count as its cause. */
 export const TICKET_CAUSE_WINDOW_MS = 60_000
+/** How close an action must be to the issue's updated_at to be the issue's latest change. */
+export const TICKET_LATEST_CHANGE_MS = 2_000
 
 /**
  * Who caused a Forgejo notification, only when that is certain. A notification also fires for
- * assignments, label changes and edits by someone else, so "the latest commenter" or "the issue
- * opener" alone would attribute those to the wrong person (and could pass a freeze as the owner).
- * The latest comment counts when it was written within a minute of the notification; else the issue
- * author counts when the issue was created within a minute of it; otherwise nobody.
+ * assignments, label changes and edits by someone else, and every one of those moves the issue's
+ * updated_at (verified on Forgejo 16). So an actor counts only when their action is the issue's
+ * latest change and happened within a minute of the notification:
+ * - the latest comment, when the issue was last updated by that comment;
+ * - else the issue author, when nothing touched the issue after it was created.
+ * Without the issue's times nothing is certain, so nobody.
  */
 export function ticketCause(
   note: { updated_at?: string },
   comment?: { login: string; id: number; createdAt: string },
-  issue?: { login: string; id: number; createdAt: string },
+  issue?: { login: string; id: number; createdAt: string; updatedAt: string },
 ): { login: string; id: number } | undefined {
   const at = Date.parse(note.updated_at ?? '')
-  if (Number.isNaN(at)) return undefined
-  const near = (iso: string): boolean => Math.abs(Date.parse(iso) - at) <= TICKET_CAUSE_WINDOW_MS
-  if (comment && near(comment.createdAt)) return { login: comment.login, id: comment.id }
-  if (issue && near(issue.createdAt)) return { login: issue.login, id: issue.id }
+  if (Number.isNaN(at) || !issue) return undefined
+  const updated = Date.parse(issue.updatedAt)
+  if (Number.isNaN(updated)) return undefined
+  const within = (iso: string, t: number, ms: number): boolean => Math.abs(Date.parse(iso) - t) <= ms
+  if (comment && within(comment.createdAt, at, TICKET_CAUSE_WINDOW_MS) && within(comment.createdAt, updated, TICKET_LATEST_CHANGE_MS)) {
+    return { login: comment.login, id: comment.id }
+  }
+  if (within(issue.createdAt, at, TICKET_CAUSE_WINDOW_MS) && within(issue.createdAt, updated, TICKET_LATEST_CHANGE_MS)) {
+    return { login: issue.login, id: issue.id }
+  }
   return undefined
 }
 

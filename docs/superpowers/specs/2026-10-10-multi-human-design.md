@@ -166,9 +166,12 @@ their own username; the username is kept for rendering.
 `InboundEvent` gets `role?: 'owner' | 'member'`, rendered as `role="…"` next to `human="true"`.
 The `human=true` marker in `mcp.log` keeps its format, because the watchdog parses it.
 
-Forgejo events are always `fromHuman: false` today, also for the owner. `pollTickets` resolves
-the author (latest commenter, otherwise the issue or PR poster) and marks the event with
-`fromHuman` and `role` when the login belongs to the roster.
+Forgejo events are always `fromHuman: false` today, also for the owner. `pollTickets` marks the
+event with `fromHuman` and `role` only when the cause is certain (`ticketCause`): every comment,
+assignment, label change and edit moves the issue's `updated_at` (verified on Forgejo 16), so
+the latest comment counts when it is the issue's latest change, and the issue's author counts
+when nothing touched the issue after it was created; both within a minute of the notification.
+The actor is matched by Forgejo user id. Anything else stays a plain Forgejo event.
 
 The MCP reads the roster at start and again when the file's mtime changes, so a running agent
 recognises a new member without a restart. `office invite`, `grant`, `revoke` and `uninvite`
