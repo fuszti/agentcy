@@ -122,13 +122,13 @@ describe('colleagues section with invited members', () => {
   const cfg = { human: { username: 'owner', displayName: 'Owner' } } as OfficeConfig
   const self = { name: 'ada', displayName: 'Ada' } as AgentRecord
   const alice = {
-    username: 'alice', displayName: 'Alice Smith', role: 'member' as const, mattermostUserId: 'u-alice', forgejoUsername: 'alice',
+    username: 'alice', displayName: 'Alice Smith', role: 'member' as const, mattermostUserId: 'u-alice', forgejoUsername: 'alice', forgejoUserId: 41,
     projects: ['web', 'api'], channels: [], invitedAt: '2026-10-11T10:00:00.000Z', removedAt: null,
   }
 
   it('lists the owner and each active member with their projects', async () => {
     const root = tmpRoot()
-    saveMembers(root, [alice, { ...alice, username: 'bob', displayName: 'Bob', mattermostUserId: 'u-bob', forgejoUsername: 'bob', removedAt: '2026-10-12T00:00:00.000Z' }])
+    saveMembers(root, [alice, { ...alice, username: 'bob', displayName: 'Bob', mattermostUserId: 'u-bob', forgejoUsername: 'bob', forgejoUserId: 42, removedAt: '2026-10-12T00:00:00.000Z' }])
     const section = await buildColleaguesSection(root, cfg, self)
     expect(section).toContain('- @owner (Owner) — human owner')
     expect(section).toContain('- @alice (Alice Smith) — invited member (a person, not the owner); projects: web, api')

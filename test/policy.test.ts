@@ -589,7 +589,7 @@ describe('system posts carry their type on the post itself', () => {
 })
 
 const OWNER: Human = { userId: 'u-owner', username: 'owner', role: 'owner' }
-const ALICE: Human = { userId: 'u-alice', username: 'alice', role: 'member', projects: ['web'] }
+const ALICE: Human = { userId: 'u-alice', username: 'alice', role: 'member', projects: ['web'], forgejoUserId: 41 }
 const withAlice = () => ctx({ humans: [OWNER, ALICE] })
 
 describe('findHuman', () => {
@@ -601,6 +601,15 @@ describe('findHuman', () => {
     expect(findHuman([OWNER, ALICE], { username: 'owner' })).toBe(OWNER)
     expect(findHuman([OWNER, ALICE], { username: 'nobody' })).toBeUndefined()
     expect(findHuman([OWNER, ALICE], {})).toBeUndefined()
+  })
+})
+
+describe('findHuman by Forgejo user id', () => {
+  it('matches the Forgejo id only, never a login', () => {
+    expect(findHuman([OWNER, ALICE], { forgejoUserId: 41 })).toBe(ALICE)
+    expect(findHuman([OWNER, ALICE], { forgejoUserId: 99 })).toBeUndefined()
+    expect(findHuman([OWNER, ALICE], { forgejoUserId: 1 })).toBeUndefined() // OWNER has no known Forgejo id
+    expect(findHuman([OWNER, ALICE], { forgejoUserId: 99, username: 'alice' })).toBeUndefined()
   })
 })
 

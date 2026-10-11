@@ -72,7 +72,9 @@ const me = await mm.me()
 const team = await mm.getTeamByName(cfg.team)
 // The owner plus invited members (state/members.json), re-read when that file changes.
 const ownerUser = await mm.getUserByUsername(cfg.human.username)
-const humans = rosterCache(root, { userId: ownerUser.id, username: ownerUser.username }, m => log(`roster: ${m}`))
+// Ticket events are matched by Forgejo user id; the owner's is resolved once (an agent token may read users).
+const ownerForgejoId = await fj.getUserIdByName(cfg.human.username).catch(() => undefined)
+const humans = rosterCache(root, { userId: ownerUser.id, username: ownerUser.username, forgejoUserId: ownerForgejoId }, m => log(`roster: ${m}`))
 const systemUsernames = cfg.systemUsernames ?? []
 const ctx = (): AgentContext => ({
   username: me.username, userId: me.id, humans: humans(), systemUsernames,

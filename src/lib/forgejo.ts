@@ -197,9 +197,29 @@ export class ForgejoClient {
 
 
   /** Read one account as an admin; undefined when it does not exist. */
-  async adminGetUser(username: string): Promise<{ login: string; email: string; is_admin: boolean; prohibit_login: boolean } | undefined> {
+  async adminGetUser(username: string): Promise<{ id: number; login: string; email: string; is_admin: boolean; prohibit_login: boolean } | undefined> {
     try {
       return await this.request('GET', `/users/${encodeURIComponent(username)}`)
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return undefined
+      throw err
+    }
+  }
+
+  /**
+   * Current login of the account with this id (a user can rename themselves), or undefined when it
+   * no longer exists. `/users/search?uid=` answers 200 with an empty list for an unknown id.
+   */
+  async getUserById(id: number): Promise<{ id: number; login: string } | undefined> {
+    const res = await this.request<{ data?: { id: number; login: string }[] }>('GET', `/users/search?uid=${String(id)}`)
+    const hit = res.data?.find(u => u.id === id)
+    return hit ? { id: hit.id, login: hit.login } : undefined
+  }
+
+  /** Forgejo id of a login, or undefined when there is no such user. */
+  async getUserIdByName(login: string): Promise<number | undefined> {
+    try {
+      return (await this.request<{ id: number }>('GET', `/users/${encodeURIComponent(login)}`)).id
     } catch (err) {
       if ((err as Error).message.includes('failed: 404')) return undefined
       throw err

@@ -19,7 +19,7 @@ afterEach(() => { for (const r of roots.splice(0)) fs.rmSync(r, { recursive: tru
 
 function member(over: Partial<MemberRecord> = {}): MemberRecord {
   return {
-    username: 'alice', displayName: 'Alice', role: 'member', mattermostUserId: 'u-alice', forgejoUsername: 'alice',
+    username: 'alice', displayName: 'Alice', role: 'member', mattermostUserId: 'u-alice', forgejoUsername: 'alice', forgejoUserId: 41,
     projects: ['web'], channels: [], invitedAt: '2026-10-11T10:00:00.000Z', removedAt: null, ...over,
   }
 }
@@ -37,7 +37,7 @@ describe('members file', () => {
 
   it('round-trips through save and load', () => {
     const root = tmpRoot()
-    const list = [member(), member({ username: 'bob', mattermostUserId: 'u-bob', forgejoUsername: 'bob', removedAt: '2026-10-12T00:00:00.000Z' })]
+    const list = [member(), member({ username: 'bob', mattermostUserId: 'u-bob', forgejoUsername: 'bob', forgejoUserId: 42, removedAt: '2026-10-12T00:00:00.000Z' })]
     saveMembers(root, list)
     expect(loadMembers(root)).toEqual(list)
     expect(JSON.parse(fs.readFileSync(membersFile(root), 'utf8'))).toEqual({ members: list })
@@ -69,14 +69,26 @@ describe('members file', () => {
   })
 })
 
+describe('parseMembers', () => {
+  it('requires a numeric Forgejo user id', () => {
+    const { forgejoUserId: _omit, ...noId } = member()
+    expect(() => parseMembers(JSON.stringify({ members: [noId] }))).toThrow(/entry 0 is not a valid member/)
+    expect(() => parseMembers(JSON.stringify({ members: [{ ...member(), forgejoUserId: '41' }] }))).toThrow(/not a valid member/)
+    expect(parseMembers(JSON.stringify({ members: [member()] }))[0].forgejoUserId).toBe(41)
+  })
+})
+
 describe('humanRoster', () => {
   it('lists the owner first, then active members with their projects', () => {
     const removed = member({ username: 'bob', mattermostUserId: 'u-bob', removedAt: '2026-10-12T00:00:00.000Z' })
     expect(activeMembers([member(), removed])).toEqual([member()])
     expect(humanRoster(owner, [member(), removed])).toEqual([
       { userId: 'u-owner', username: 'owner', role: 'owner' },
-      { userId: 'u-alice', username: 'alice', role: 'member', projects: ['web'] },
+      { userId: 'u-alice', username: 'alice', role: 'member', projects: ['web'], forgejoUserId: 41 },
     ])
+  })
+  it('carries the owner Forgejo id when it is known', () => {
+    expect(humanRoster({ ...owner, forgejoUserId: 1 }, [])[0]).toEqual({ userId: 'u-owner', username: 'owner', role: 'owner', forgejoUserId: 1 })
   })
 })
 

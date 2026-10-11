@@ -61,7 +61,7 @@ Findings the design depends on:
 ```json
 { "members": [ {
   "username": "alice", "displayName": "Alice", "role": "member",
-  "mattermostUserId": "…", "forgejoUsername": "alice",
+  "mattermostUserId": "…", "forgejoUsername": "alice", "forgejoUserId": 7,
   "projects": ["web", "api"], "channels": ["design"],
   "invitedAt": "2026-10-10T12:00:00Z", "removedAt": null
 } ] }
@@ -70,6 +70,12 @@ Findings the design depends on:
 `src/lib/members.ts` (new) owns reading, writing and validating it, and exposes
 `humanRoster(owner, members)`: the owner plus all members that are not removed, each with a role.
 Everything that asks "is this a person, and which one" goes through it.
+
+Forgejo lets users rename themselves, so the roster keys on `forgejoUserId` (required; set by
+`invite`). `forgejoUsername` is only the login at invite time. Every Forgejo action on a member
+(collaborator grants and removals, password reset, blocking) resolves the current login from the id
+first (`GET /users/search?uid=`); a vanished account counts as already removed. Ticket events are
+matched to people by this id. The owner's id is resolved once by the MCP (`GET /users/<owner>`).
 
 A removed member stays in the file with `removedAt` set. Usernames are never reused, the same
 rule agents follow.

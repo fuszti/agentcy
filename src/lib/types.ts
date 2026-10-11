@@ -201,6 +201,8 @@ export interface Human {
   role: HumanRole
   /** Projects a member was invited to. Unset for the owner. */
   projects?: string[]
+  /** Forgejo account id (stable across renames); ticket events are matched by it. Unset when unknown. */
+  forgejoUserId?: number
 }
 
 /** One invited member: an entry of state/members.json (no secrets). */
@@ -210,7 +212,10 @@ export interface MemberRecord {
   displayName: string
   role: 'member'
   mattermostUserId: string
+  /** Forgejo login at invite time. The account can be renamed later; `forgejoUserId` is the key. */
   forgejoUsername: string
+  /** Forgejo account id, stable across renames. */
+  forgejoUserId: number
   projects: string[]
   /** Extra channels besides the project channels. */
   channels: string[]

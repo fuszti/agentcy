@@ -322,6 +322,28 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
       }
     }, 60_000)
 
+    it('uninvite still blocks a member whose Forgejo account was renamed', async () => {
+      const name = `rn-${tag}`.slice(0, 22)
+      const renamed = `${name}x`.slice(0, 22)
+      printed.length = 0
+      await cmdInvite([name], { projects: web }, deps)
+      const pw = passwordAfter('tickets')
+      const rec = loadMembers(repoRoot()).find(m => m.username === name)
+      expect(rec?.forgejoUserId).toBeGreaterThan(0)
+      const secrets = await loadSecrets()
+      const rename = await fetch(`${config.forgejoUrl}/api/v1/admin/users/${name}/rename`, {
+        method: 'POST', headers: { Authorization: `token ${secrets?.forgejo.adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_username: renamed }),
+      })
+      expect(rename.status).toBe(204)
+      await fjAdmin.adminResetPassword(renamed, pw, false)
+      expect((await fjAs(renamed, pw)('/user')).status).toBe(200)
+
+      await cmdUninvite([name], deps)
+      expect(loadMembers(repoRoot()).find(m => m.username === name)?.removedAt).not.toBeNull()
+      expect((await fjAs(renamed, pw)('/user')).status).toBe(401)
+    }, 90_000)
+
     it('uninvite locks the member out of both systems', async () => {
       await cmdUninvite([username], deps)
       const res = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: username, password: chatPassword }) })

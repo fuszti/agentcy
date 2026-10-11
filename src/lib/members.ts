@@ -21,7 +21,7 @@ function isMember(v: unknown): v is MemberRecord {
   if (!v || typeof v !== 'object') return false
   const m = v as Record<string, unknown>
   return isString(m.username) && MEMBER_USERNAME_RE.test(m.username) && isString(m.displayName) && m.role === 'member' &&
-    isString(m.mattermostUserId) && isString(m.forgejoUsername) && isStringList(m.projects) && isStringList(m.channels) &&
+    isString(m.mattermostUserId) && isString(m.forgejoUsername) && Number.isInteger(m.forgejoUserId) && (m.forgejoUserId as number) > 0 && isStringList(m.projects) && isStringList(m.channels) &&
     isString(m.invitedAt) && (m.removedAt === null || isString(m.removedAt))
 }
 
@@ -62,10 +62,10 @@ export function activeMembers(members: MemberRecord[]): MemberRecord[] {
 }
 
 /** Everyone the office treats as a person: the owner, then the active members. */
-export function humanRoster(owner: { userId: string; username: string }, members: MemberRecord[]): Human[] {
+export function humanRoster(owner: { userId: string; username: string; forgejoUserId?: number }, members: MemberRecord[]): Human[] {
   return [
-    { userId: owner.userId, username: owner.username, role: 'owner' },
-    ...activeMembers(members).map((m): Human => ({ userId: m.mattermostUserId, username: m.username, role: 'member', projects: m.projects })),
+    { userId: owner.userId, username: owner.username, role: 'owner', ...(owner.forgejoUserId !== undefined ? { forgejoUserId: owner.forgejoUserId } : {}) },
+    ...activeMembers(members).map((m): Human => ({ userId: m.mattermostUserId, username: m.username, role: 'member', projects: m.projects, forgejoUserId: m.forgejoUserId })),
   ]
 }
 
@@ -73,7 +73,7 @@ export function humanRoster(owner: { userId: string; username: string }, members
  * The roster for a long-running process: re-read when the file changes, so a running MCP sees a
  * new member without a restart. An invalid file keeps the last good roster and is reported once.
  */
-export function rosterCache(root: string, owner: { userId: string; username: string }, onError?: (msg: string) => void): () => Human[] {
+export function rosterCache(root: string, owner: { userId: string; username: string; forgejoUserId?: number }, onError?: (msg: string) => void): () => Human[] {
   let stamp = ''
   let list = humanRoster(owner, [])
   return () => {

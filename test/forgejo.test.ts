@@ -233,6 +233,25 @@ describe('ForgejoClient privacy and collaborators', () => {
     expect(await new ForgejoClient('http://fj', 'tok').isTeamMember('office', 'agents', 'alice')).toBe(false)
   })
 
+  it('getUserById resolves the current login by id, or undefined when the id is unknown', async () => {
+    const reqs = capture(() => jsonResponse({ ok: true, data: [{ id: 41, login: 'alice-renamed' }] }))
+    expect(await new ForgejoClient('http://fj', 'tok').getUserById(41)).toEqual({ id: 41, login: 'alice-renamed' })
+    expect(reqs[0].url).toBe('http://fj/api/v1/users/search?uid=41')
+    capture(() => jsonResponse({ ok: true, data: [] }))
+    expect(await new ForgejoClient('http://fj', 'tok').getUserById(42)).toBeUndefined()
+    capture(() => jsonResponse({ ok: true, data: [{ id: 7, login: 'other' }] }))
+    expect(await new ForgejoClient('http://fj', 'tok').getUserById(42)).toBeUndefined()
+  })
+
+  it('getUserIdByName returns the id, undefined for a missing user, and throws on other errors', async () => {
+    capture(() => jsonResponse({ id: 5, login: 'owner' }))
+    expect(await new ForgejoClient('http://fj', 'tok').getUserIdByName('owner')).toBe(5)
+    capture(() => jsonResponse({ message: 'nope' }, 404))
+    expect(await new ForgejoClient('http://fj', 'tok').getUserIdByName('ghost')).toBeUndefined()
+    capture(() => jsonResponse({ message: 'boom' }, 500))
+    await expect(new ForgejoClient('http://fj', 'tok').getUserIdByName('x')).rejects.toThrow(/500/)
+  })
+
   it('issueAuthor returns the poster login, or undefined when the issue cannot be read', async () => {
     capture(() => jsonResponse({ number: 7, user: { login: 'alice' } }))
     expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 7)).toBe('alice')

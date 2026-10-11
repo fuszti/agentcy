@@ -30,13 +30,17 @@ export interface MemberDeps {
     deactivate(userId: string): Promise<void>
   }
   git: {
-    /** Create the account (password change forced at first login), or reset an existing one. */
-    ensureUser(u: { username: string; email: string; password: string }): Promise<void>
-    /** `repo` is "org/name" as stored in ProjectRecord.repo. */
-    addCollaborator(repo: string, username: string): Promise<void>
-    removeCollaborator(repo: string, username: string): Promise<void>
-    setPassword(username: string, password: string): Promise<void>
-    prohibitLogin(username: string): Promise<void>
+    /** Create the account (password change forced at first login), or reset an existing one. Returns the Forgejo user id. */
+    ensureUser(u: { username: string; email: string; password: string }): Promise<number>
+    /**
+     * The methods below take the Forgejo user id and resolve the current login first (a user can
+     * rename themselves). The ones that remove access treat a vanished account as already done.
+     * `repo` is "org/name" as stored in ProjectRecord.repo.
+     */
+    addCollaborator(repo: string, userId: number): Promise<void>
+    removeCollaborator(repo: string, userId: number): Promise<void>
+    setPassword(userId: number, password: string): Promise<void>
+    prohibitLogin(userId: number): Promise<void>
   }
   /** Queue a signed system notice for one agent. */
   notify(agent: string, label: string, text: string): Promise<void>
@@ -161,13 +165,14 @@ export async function cmdInvite(pos: string[], flags: Flags, deps: MemberDeps): 
     await deps.chat.addToTeam(userId)
     done.push('team membership')
     record = {
-      username, displayName, role: 'member', mattermostUserId: userId, forgejoUsername: username,
+      username, displayName, role: 'member', mattermostUserId: userId, forgejoUsername: username, forgejoUserId: 0,
       projects: grants.projects.map(p => p.name), channels: grants.channels, invitedAt: deps.now(), removedAt: null,
     }
     for (const c of channelsOf(record, grants.projects)) { await deps.chat.addToChannel(c, userId); done.push(`#${c}`) }
-    await deps.git.ensureUser({ username, email, password: gitPassword })
+    const forgejoUserId = await deps.git.ensureUser({ username, email, password: gitPassword })
+    record = { ...record, forgejoUserId }
     done.push(`tickets account ${username}`)
-    for (const p of grants.projects) { await deps.git.addCollaborator(p.repo, username); done.push(`collaborator ${p.repo}`) }
+    for (const p of grants.projects) { await deps.git.addCollaborator(p.repo, forgejoUserId); done.push(`collaborator ${p.repo}`) }
     saveMembers(deps.root, [...members, record])
   })
 
@@ -192,7 +197,7 @@ async function grant(pos: string[], flags: Flags, deps: MemberDeps): Promise<voi
   const done: string[] = []
   await withSteps(done, async () => {
     for (const c of channelsOf(next, projects)) if (!had.includes(c)) { await deps.chat.addToChannel(c, m.mattermostUserId); done.push(`#${c}`) }
-    for (const p of grants.projects) if (!m.projects.includes(p.name)) { await deps.git.addCollaborator(p.repo, m.forgejoUsername); done.push(`collaborator ${p.repo}`) }
+    for (const p of grants.projects) if (!m.projects.includes(p.name)) { await deps.git.addCollaborator(p.repo, m.forgejoUserId); done.push(`collaborator ${p.repo}`) }
     saveMembers(deps.root, replace(all, next))
   })
   await notifyAgents(deps, 'changed', next)
@@ -215,7 +220,7 @@ async function revoke(pos: string[], flags: Flags, deps: MemberDeps): Promise<vo
     for (const c of channelsOf(m, projects)) if (!keeps.includes(c)) { await deps.chat.removeFromChannel(c, m.mattermostUserId); done.push(`removed from #${c}`) }
     for (const n of projectNames) {
       const p = projects.find(x => x.name === n)
-      if (p) { await deps.git.removeCollaborator(p.repo, m.forgejoUsername); done.push(`removed collaborator ${p.repo}`) }
+      if (p) { await deps.git.removeCollaborator(p.repo, m.forgejoUserId); done.push(`removed collaborator ${p.repo}`) }
     }
     saveMembers(deps.root, replace(all, next))
   })
@@ -228,7 +233,7 @@ async function resetPassword(pos: string[], deps: MemberDeps): Promise<void> {
   const chatPassword = deps.randomPassword()
   const gitPassword = deps.randomPassword()
   await deps.chat.setPassword(m.mattermostUserId, chatPassword)
-  await deps.git.setPassword(m.forgejoUsername, gitPassword)
+  await deps.git.setPassword(m.forgejoUserId, gitPassword)
   deps.log('New one-time passwords (shown once, not stored):')
   deps.log(`  chat:    ${m.username} / ${chatPassword}`)
   deps.log(`  tickets: ${m.forgejoUsername} / ${gitPassword}  (must be changed at first login)`)
@@ -256,15 +261,21 @@ export async function cmdMember(pos: string[], flags: Flags, deps: MemberDeps): 
 
 export async function cmdUninvite(pos: string[], deps: MemberDeps): Promise<void> {
   const { all, m } = activeMember(deps, pos[0], 'usage: office uninvite <username>')
-  // Block both accounts first. If either fails, nothing is recorded and a re-run starts over.
-  await deps.chat.deactivate(m.mattermostUserId)
-  await deps.git.prohibitLogin(m.forgejoUsername)
+  // Block both accounts first. If either fails, nothing is recorded and a re-run starts over; the
+  // error says which account is already blocked.
+  const done: string[] = []
+  await withSteps(done, async () => {
+    await deps.chat.deactivate(m.mattermostUserId)
+    done.push(`chat account ${m.username} deactivated`)
+    await deps.git.prohibitLogin(m.forgejoUserId)
+    done.push(`tickets account blocked`)
+  })
   const projects = await deps.projects()
   for (const n of m.projects) {
     const p = projects.find(x => x.name === n)
     if (!p) continue
     try {
-      await deps.git.removeCollaborator(p.repo, m.forgejoUsername)
+      await deps.git.removeCollaborator(p.repo, m.forgejoUserId)
     } catch (e) {
       deps.log(`warning: could not remove @${m.username} from ${p.repo}: ${(e as Error).message} (the account is blocked)`)
     }

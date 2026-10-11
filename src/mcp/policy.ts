@@ -51,9 +51,11 @@ const BROADCAST = /(^|[^@\w.-])@(all|channel|here)(?![\w-])/i
 
 /**
  * Who of the roster this is. A Mattermost user can rename themselves, so a user id decides when
- * one is given; the username is only used where no id exists (Forgejo logins).
+ * one is given; the username is only used where no id exists. A Forgejo account is matched by
+ * `forgejoUserId` only, never by login (a Forgejo user can rename themselves).
  */
-export function findHuman(humans: Human[], who: { userId?: string; username?: string }): Human | undefined {
+export function findHuman(humans: Human[], who: { userId?: string; username?: string; forgejoUserId?: number }): Human | undefined {
+  if (who.forgejoUserId !== undefined) return humans.find(h => h.forgejoUserId === who.forgejoUserId)
   if (who.userId !== undefined) return humans.find(h => h.userId === who.userId)
   if (who.username !== undefined) return humans.find(h => h.username === who.username)
   return undefined

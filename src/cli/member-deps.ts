@@ -29,6 +29,14 @@ export async function realMemberDeps(root: string, cfg: OfficeConfig): Promise<M
     return [owner, name]
   }
 
+  /** Current login of a Forgejo account; undefined when it is gone. */
+  const login = async (id: number): Promise<string | undefined> => (await fj.getUserById(id))?.login
+  const needLogin = async (id: number): Promise<string> => {
+    const l = await login(id)
+    if (!l) throw new Error(`the tickets account (id ${String(id)}) no longer exists`)
+    return l
+  }
+
   return {
     root,
     cfg,
@@ -69,7 +77,7 @@ export async function realMemberDeps(root: string, cfg: OfficeConfig): Promise<M
     git: {
       ensureUser: async (u) => {
         try {
-          await fj.createUser({ ...u, mustChangePassword: true })
+          return (await fj.createUser({ ...u, mustChangePassword: true })).id
         } catch (e) {
           if (!exists(e)) throw e
           const existing = await fj.adminGetUser(u.username)
@@ -77,12 +85,19 @@ export async function realMemberDeps(root: string, cfg: OfficeConfig): Promise<M
             && !(await fj.isTeamMember(cfg.forgejoOrg, 'agents', u.username))
           if (!ours) throw new Error(notOurs(u.username))
           await fj.adminResetPassword(u.username, u.password, true)
+          return existing.id
         }
       },
-      addCollaborator: (repo, username) => fj.addCollaborator(...split(repo), username, 'write'),
-      removeCollaborator: (repo, username) => fj.removeCollaborator(...split(repo), username),
-      setPassword: (username, password) => fj.adminResetPassword(username, password, true),
-      prohibitLogin: (username) => fj.setProhibitLogin(username, true),
+      addCollaborator: async (repo, id) => fj.addCollaborator(...split(repo), await needLogin(id), 'write'),
+      removeCollaborator: async (repo, id) => {
+        const l = await login(id)
+        if (l) await fj.removeCollaborator(...split(repo), l)
+      },
+      setPassword: async (id, password) => fj.adminResetPassword(await needLogin(id), password, true),
+      prohibitLogin: async (id) => {
+        const l = await login(id)
+        if (l) await fj.setProhibitLogin(l, true)
+      },
     },
     notify: async (agent, label, text) => { await queueSystemPrompt(root, agent, label, text) },
   }

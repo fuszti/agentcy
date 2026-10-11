@@ -46,7 +46,7 @@ function harness(opts: { rolesReady?: boolean; failOn?: string } = {}) {
       deactivate: async (id) => { rec(`chat.deactivate ${id}`) },
     },
     git: {
-      ensureUser: async (u) => { rec(`git.ensureUser ${u.username} ${u.email} ${u.password}`) },
+      ensureUser: async (u) => { rec(`git.ensureUser ${u.username} ${u.email} ${u.password}`); return 41 },
       addCollaborator: async (repo, u) => { rec(`git.addCollaborator ${repo} ${u}`) },
       removeCollaborator: async (repo, u) => { rec(`git.removeCollaborator ${repo} ${u}`) },
       setPassword: async (u, pw) => { rec(`git.setPassword ${u} ${pw}`) },
@@ -74,10 +74,10 @@ describe('office invite', () => {
       'chat.addToChannel proj-web id-alice',
       'chat.addToChannel design id-alice',
       'git.ensureUser alice alice@office.local pw2',
-      'git.addCollaborator office/web alice',
+      'git.addCollaborator office/web 41',
     ])
     expect(loadMembers(h.root)).toEqual([{
-      username: 'alice', displayName: 'Alice Smith', role: 'member', mattermostUserId: 'id-alice', forgejoUsername: 'alice',
+      username: 'alice', displayName: 'Alice Smith', role: 'member', mattermostUserId: 'id-alice', forgejoUsername: 'alice', forgejoUserId: 41,
       projects: ['web'], channels: ['design'], invitedAt: '2026-10-11T10:00:00.000Z', removedAt: null,
     }])
     const printed = h.out.join('\n')
@@ -179,7 +179,7 @@ describe('office invite', () => {
     h.state.failOn = undefined
     h.calls.length = 0
     await cmdInvite(['alice'], { projects: 'web' }, h.deps)
-    expect(h.calls).toContain('git.addCollaborator office/web alice')
+    expect(h.calls).toContain('git.addCollaborator office/web 41')
     expect(loadMembers(h.root)).toHaveLength(1)
     expect(h.notices).toHaveLength(2)
   })
@@ -237,7 +237,7 @@ describe('office member', () => {
     expect(h.calls).toEqual([
       'chat.addToChannel proj-api id-alice',
       'chat.addToChannel office id-alice',
-      'git.addCollaborator office/api alice',
+      'git.addCollaborator office/api 41',
     ])
     expect(loadMembers(h.root)[0]).toMatchObject({ projects: ['web', 'api'], channels: ['design', 'office'] })
     expect(h.notices[0].label).toBe('member-changed')
@@ -260,7 +260,7 @@ describe('office member', () => {
     expect(h.calls).toEqual([
       'chat.removeFromChannel proj-web id-alice',
       'chat.removeFromChannel design id-alice',
-      'git.removeCollaborator office/web alice',
+      'git.removeCollaborator office/web 41',
     ])
     expect(loadMembers(h.root)[0]).toMatchObject({ projects: ['api'], channels: [] })
   })
@@ -269,7 +269,7 @@ describe('office member', () => {
     const h = harness()
     await invited(h, { projects: 'web', channels: 'proj-web' })
     await cmdMember(['revoke', 'alice'], { projects: 'web' }, h.deps)
-    expect(h.calls).toEqual(['git.removeCollaborator office/web alice'])
+    expect(h.calls).toEqual(['git.removeCollaborator office/web 41'])
     expect(loadMembers(h.root)[0]).toMatchObject({ projects: [], channels: ['proj-web'] })
   })
 
@@ -278,7 +278,7 @@ describe('office member', () => {
     await invited(h)
     h.projects[0].archived = true
     await cmdMember(['revoke', 'alice'], { projects: 'web' }, h.deps)
-    expect(h.calls).toContain('git.removeCollaborator office/web alice')
+    expect(h.calls).toContain('git.removeCollaborator office/web 41')
     expect(loadMembers(h.root)[0].projects).toEqual([])
   })
 
@@ -294,7 +294,7 @@ describe('office member', () => {
     const h = harness()
     await invited(h)
     await cmdMember(['reset-password', 'alice'], {}, h.deps)
-    expect(h.calls).toEqual(['chat.setPassword id-alice pw3', 'git.setPassword alice pw4'])
+    expect(h.calls).toEqual(['chat.setPassword id-alice pw3', 'git.setPassword 41 pw4'])
     expect(h.out.join('\n')).toMatch(/pw3/)
     expect(h.out.join('\n')).toMatch(/pw4/)
   })
@@ -312,9 +312,9 @@ describe('office uninvite', () => {
     await cmdUninvite(['alice'], h.deps)
     expect(h.calls).toEqual([
       'chat.deactivate id-alice',
-      'git.prohibitLogin alice',
-      'git.removeCollaborator office/web alice',
-      'git.removeCollaborator office/api alice',
+      'git.prohibitLogin 41',
+      'git.removeCollaborator office/web 41',
+      'git.removeCollaborator office/api 41',
     ])
     expect(loadMembers(h.root)[0]).toMatchObject({ username: 'alice', projects: [], channels: [], removedAt: '2026-10-11T10:00:00.000Z' })
     expect(h.notices.map(n => n.label)).toEqual(['member-left', 'member-left'])
@@ -325,7 +325,7 @@ describe('office uninvite', () => {
     await invited(h)
     h.state.failOn = 'git.removeCollaborator'
     await cmdUninvite(['alice'], h.deps)
-    expect(h.calls.slice(0, 2)).toEqual(['chat.deactivate id-alice', 'git.prohibitLogin alice'])
+    expect(h.calls.slice(0, 2)).toEqual(['chat.deactivate id-alice', 'git.prohibitLogin 41'])
     expect(loadMembers(h.root)[0].removedAt).toBe('2026-10-11T10:00:00.000Z')
     expect(h.out.join('\n')).toMatch(/could not remove @alice from office\/web/)
   })
@@ -334,11 +334,19 @@ describe('office uninvite', () => {
     const h = harness()
     await invited(h)
     h.state.failOn = 'git.prohibitLogin'
-    await expect(cmdUninvite(['alice'], h.deps)).rejects.toThrow(/simulated failure/)
+    await expect(cmdUninvite(['alice'], h.deps)).rejects.toThrow(/simulated failure.*Done so far: chat account alice deactivated\. Nothing was recorded; run the same command again/s)
     expect(loadMembers(h.root)[0].removedAt).toBeNull()
     h.state.failOn = undefined
     await cmdUninvite(['alice'], h.deps)
     expect(loadMembers(h.root)[0].removedAt).not.toBeNull()
+  })
+
+  it('names the done steps when blocking the tickets account fails after the chat account was deactivated', async () => {
+    const h = harness()
+    await invited(h)
+    h.state.failOn = 'git.prohibitLogin'
+    const err = await cmdUninvite(['alice'], h.deps).catch((e: Error) => e)
+    expect((err as Error).message).toMatch(/Done so far: chat account alice deactivated/)
   })
 
   it('completes for a member whose project no longer exists', async () => {
@@ -346,7 +354,7 @@ describe('office uninvite', () => {
     await invited(h)
     h.projects.splice(0, 1)
     await cmdUninvite(['alice'], h.deps)
-    expect(h.calls).toEqual(['chat.deactivate id-alice', 'git.prohibitLogin alice'])
+    expect(h.calls).toEqual(['chat.deactivate id-alice', 'git.prohibitLogin 41'])
     expect(loadMembers(h.root)[0].removedAt).not.toBeNull()
   })
 
