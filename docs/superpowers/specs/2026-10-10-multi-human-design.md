@@ -32,7 +32,7 @@ Built-in roles can be edited on Team Edition. The code uses the REST role API
 (`PUT /roles/{id}/patch`), which also works there (`mmctl --local permissions` was how it was first
 probed, although its help text says "Only works in Enterprise Edition"). With `list_team_channels`, `join_public_channels`,
 `read_public_channel`, `create_public_channel`, `create_private_channel`, `invite_user` and
-`add_user_to_team` removed from `team_user`, and the first five added to `team_admin`:
+`add_user_to_team` removed from `team_user`, and `team_admin` set to exactly the first five (an allow-list; see §2):
 
 | Check | Member (`team_user`) | Bot promoted to team admin |
 |---|---|---|
@@ -80,12 +80,14 @@ rule agents follow.
 `office init` and `office up` converge every office to the same state. It is idempotent and runs
 in this order:
 
-1. Add the public-channel permissions to `team_admin` and remove from it what agents could not do
-   before (team management, role management, removing users from the team, deleting other users'
-   posts, channel conversion, managing other users' webhooks and slash commands). The owner is a
-   system admin and is not affected.
-2. Read `team_admin` back. Stop with an error if a granted permission is missing or a removed one
-   is still there. No bot has been promoted at this point.
+1. Set `team_admin` to exactly the five public-channel permissions (an allow-list). The stock role
+   also carries private-channel rights (for example `manage_private_channel_members`) that
+   Mattermost falls back to for private channels, so a deny-list could let a bot add itself to
+   the private `#office-admin` or archive it. Bots keep posting, reacting and uploading through
+   `team_user` and channel roles, which team admins retain. The owner is a system admin and is
+   not affected.
+2. Read `team_admin` back. Stop with an error unless its permissions equal the allow-list. No bot
+   has been promoted at this point.
 3. Promote every bot of the office (all agents and the `office` system bot) to team admin.
 4. Read back each bot's membership and admin flag. Stop with an error if one is not a team admin.
 5. Only then remove the seven permissions from `team_user`.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  AGENT_GRANTED, MEMBER_DENIED, TEAM_ADMIN_REMOVED, chatRolesReady, ensureChatRoles, planRoleChanges, type RoleClient,
+  AGENT_GRANTED, MEMBER_DENIED, chatRolesReady, ensureChatRoles, planRoleChanges, type RoleClient,
 } from '../src/lib/chat-roles.js'
 
 // What Mattermost Team Edition 11.11.1 ships (probed 2026-10-10).
@@ -10,7 +10,7 @@ const STOCK_USER = [
 ]
 const STOCK_ADMIN = [
   'add_reaction', 'create_post', 'delete_others_posts', 'delete_post', 'import_team', 'manage_channel_roles',
-  'manage_public_channel_members', 'manage_team', 'manage_team_roles', 'remove_reaction', 'remove_user_from_team',
+  'manage_public_channel_members', 'manage_private_channel_members', 'delete_private_channel', 'manage_team', 'manage_team_roles', 'remove_reaction', 'remove_user_from_team',
   'upload_file', 'use_channel_mentions', 'convert_public_channel_to_private', 'manage_others_slash_commands',
 ]
 
@@ -54,32 +54,22 @@ describe('permission lists', () => {
       'create_private_channel', 'create_public_channel', 'join_public_channels', 'list_team_channels', 'read_public_channel',
     ])
   })
-  it('removes team management and moderation from the agents role', () => {
-    for (const p of ['manage_team', 'manage_team_roles', 'manage_channel_roles', 'remove_user_from_team', 'delete_others_posts', 'import_team', 'convert_public_channel_to_private', 'manage_others_slash_commands']) {
-      expect(TEAM_ADMIN_REMOVED, p).toContain(p)
-    }
-    for (const p of AGENT_GRANTED) expect(TEAM_ADMIN_REMOVED, p).not.toContain(p)
-  })
 })
 
 describe('planRoleChanges', () => {
   it('computes both target permission sets from the stock roles', () => {
     const plan = planRoleChanges({ teamUser: STOCK_USER, teamAdmin: STOCK_ADMIN })
     expect(plan.teamUser).toEqual(['playbook_private_create', 'playbook_public_create', 'view_team'])
-    expect(plan.teamAdmin).toEqual([
-      'add_reaction', 'create_post', 'create_private_channel', 'create_public_channel', 'delete_post',
-      'join_public_channels', 'list_team_channels', 'manage_public_channel_members', 'read_public_channel',
-      'remove_reaction', 'upload_file', 'use_channel_mentions',
-    ])
+    expect(plan.teamAdmin).toEqual([...AGENT_GRANTED].sort())
   })
   it('is a fixed point: planning the result changes nothing', () => {
     const once = planRoleChanges({ teamUser: STOCK_USER, teamAdmin: STOCK_ADMIN })
     expect(planRoleChanges(once)).toEqual(once)
   })
-  it('keeps permissions it does not know about', () => {
-    const plan = planRoleChanges({ teamUser: ['view_team', 'some_future_permission'], teamAdmin: ['another_future_permission'] })
+  it('keeps unknown team_user permissions but removes unknown team_admin ones', () => {
+    const plan = planRoleChanges({ teamUser: ['view_team', 'some_future_permission'], teamAdmin: ['another_future_permission', 'manage_private_channel_members'] })
     expect(plan.teamUser).toContain('some_future_permission')
-    expect(plan.teamAdmin).toContain('another_future_permission')
+    expect(plan.teamAdmin).toEqual([...AGENT_GRANTED].sort())
   })
 })
 
@@ -89,8 +79,7 @@ describe('ensureChatRoles', () => {
     await ensureChatRoles(f.mm, 't1', ['b1', 'b2'])
     expect(f.calls).toEqual(['patch r-admin', 'admin b1', 'admin b2', 'patch r-user'])
     expect(f.roles.team_user.permissions.sort()).toEqual(['playbook_private_create', 'playbook_public_create', 'view_team'])
-    for (const p of AGENT_GRANTED) expect(f.roles.team_admin.permissions).toContain(p)
-    expect(f.roles.team_admin.permissions).not.toContain('manage_team')
+    expect(f.roles.team_admin.permissions.sort()).toEqual([...AGENT_GRANTED].sort())
   })
 
   it('does nothing on a second run', async () => {
@@ -125,19 +114,19 @@ describe('ensureChatRoles', () => {
 
   it('leaves team_user untouched when Mattermost ignores the team_admin update', async () => {
     const f = fake({ ignorePatchOf: 'r-admin' })
-    await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin is missing .*list_team_channels.*team_user left unchanged/s)
+    await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin is .* after the update, expected exactly .*list_team_channels.*team_user left unchanged/s)
     expect(f.calls).not.toContain('patch r-user')
     expect(f.calls.filter(c => c.startsWith('admin'))).toEqual([])
   })
 
-  it('promotes no bot when the team_admin update leaves the removed permissions in place', async () => {
+  it('promotes no bot when the team_admin update leaves extra permissions in place', async () => {
     const f = fake()
     f.mm.patchRolePermissions = async (id, permissions) => {
       f.calls.push(`patch ${id}`)
       const role = Object.values(f.roles).find(r => r.id === id)
       if (role && id === 'r-admin') role.permissions = [...new Set([...role.permissions, ...permissions])]
     }
-    await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin still has .*manage_team.*team_user left unchanged/s)
+    await expect(ensureChatRoles(f.mm, 't1', ['b1'])).rejects.toThrow(/team_admin is .*manage_team.* after the update, expected exactly .*team_user left unchanged/s)
     expect(f.calls.filter(c => c.startsWith('admin'))).toEqual([])
     expect(f.calls).not.toContain('patch r-user')
   })
@@ -160,6 +149,12 @@ describe('chatRolesReady', () => {
     expect(await chatRolesReady(f.mm)).toBe(false)
     await ensureChatRoles(f.mm, 't1', ['b1'])
     expect(await chatRolesReady(f.mm)).toBe(true)
+  })
+  it('is false when team_admin has an extra permission', async () => {
+    const f = fake()
+    await ensureChatRoles(f.mm, 't1', ['b1'])
+    f.roles.team_admin.permissions.push('manage_private_channel_members')
+    expect(await chatRolesReady(f.mm)).toBe(false)
   })
   it('is false when the role cannot be read', async () => {
     expect(await chatRolesReady({ getRoleByName: async () => { throw new Error('down') } })).toBe(false)

@@ -100,6 +100,20 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
     expect(res.status).toBe(403)
   }, 30_000)
 
+  it('an agent bot cannot join or archive the private owner channels', async () => {
+    const adminCh = await mmAdmin.getChannelByName(teamId, config.adminChannel)
+    const me = await botMm.me()
+    const h = { Authorization: `Bearer ${botToken}`, 'Content-Type': 'application/json' }
+    const add = await fetch(`${config.mattermostUrl}/api/v4/channels/${adminCh.id}/members`, { method: 'POST', headers: h, body: JSON.stringify({ user_id: me.id }) })
+    expect(add.status).toBeGreaterThanOrEqual(400)
+    expect(add.status).toBeLessThan(500)
+    const del = await fetch(`${config.mattermostUrl}/api/v4/channels/${adminCh.id}`, { method: 'DELETE', headers: h })
+    expect(del.status).toBeGreaterThanOrEqual(400)
+    expect(del.status).toBeLessThan(500)
+    expect((await mmAdmin.getChannelMembers(adminCh.id)).some(m => m.user_id === me.id)).toBe(false)
+    expect((await mmAdmin.getChannelByName(teamId, config.adminChannel)).id).toBe(adminCh.id)
+  }, 30_000)
+
   it('the org and every repo are private, and agents still reach them', async () => {
     expect((await fjAdmin.getOrg(config.forgejoOrg))?.visibility).toBe('private')
     const repos = await fjAdmin.listOrgRepos(config.forgejoOrg)
