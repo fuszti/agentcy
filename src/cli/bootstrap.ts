@@ -6,9 +6,10 @@ import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgent, loadAgent } from '../lib/config.js'
+import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgent, loadAgent, listAgents } from '../lib/config.js'
 import { MattermostClient } from '../lib/mattermost.js'
-import { ForgejoClient } from '../lib/forgejo.js'
+import { ForgejoClient, ensureForgejoPrivacy } from '../lib/forgejo.js'
+import { ensureChatRoles } from '../lib/chat-roles.js'
 import type { OfficeSecrets, ChatChannel } from '../lib/types.js'
 import { assertStackOwnership, composeEnv, composeFileArgs, writeInfraEnv } from '../lib/infra.js'
 
@@ -421,6 +422,32 @@ async function ensureForgejoOrgAndRepo(
 }
 
 /** Idempotent bootstrap of the whole local office. */
+/**
+ * Converge who can see what: chat roles (agents are trimmed team admins, plain team users only see
+ * channels they were added to) and Forgejo privacy (org and repos private). Idempotent; run by
+ * `office init` and `office up`. Does nothing before the office is initialised.
+ */
+export async function ensureOfficePolicies(): Promise<void> {
+  const config = await loadConfig()
+  const secrets = await loadSecrets()
+  if (!secrets?.mattermost.adminToken || !secrets.forgejo.adminToken) return
+  await waitForMattermost(config.mattermostUrl)
+  await waitForForgejo(config.forgejoUrl)
+
+  const bots: string[] = []
+  for (const name of await listAgents()) {
+    const rec = await loadAgent(name)
+    if (rec?.status === 'hired') bots.push(rec.mattermost.userId)
+  }
+  if (secrets.officeBot?.userId) bots.push(secrets.officeBot.userId)
+  await ensureChatRoles(new MattermostClient(config.mattermostUrl, secrets.mattermost.adminToken), secrets.mattermost.teamId, bots)
+
+  const changed = await ensureForgejoPrivacy(new ForgejoClient(config.forgejoUrl, secrets.forgejo.adminToken), config.forgejoOrg)
+  if (changed.org || changed.repos.length) {
+    console.log(`Forgejo: made private: ${[...(changed.org ? [`org ${config.forgejoOrg}`] : []), ...changed.repos].join(', ')}`)
+  }
+}
+
 export async function bootstrap(): Promise<void> {
   assertStackOwnership(repoRoot())
   await ensureInfraEnv()
@@ -462,6 +489,7 @@ export async function bootstrap(): Promise<void> {
     officeBot,
   }
   await saveSecrets(secrets)
+  await ensureOfficePolicies()
 
   console.log('\nAgent Office bootstrapped.')
   console.log(`Mattermost: ${config.mattermostUrl}`)
@@ -500,6 +528,8 @@ export async function createAgentIdentity(
 
   await mm.updateUserRoles(userId, 'system_user')
   await mm.addUserToTeam(secrets.mattermost.teamId, userId)
+  // Agents are team admins: plain team users (invited members) cannot list or join public channels.
+  await mm.setTeamAdmin(secrets.mattermost.teamId, userId)
   const channels = await mm.getPublicChannels(secrets.mattermost.teamId)
   for (const ch of channels) {
     try {

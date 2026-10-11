@@ -1,0 +1,124 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { bootstrap, createAgentIdentity, ensureOfficePolicies, retireAgentIdentity } from '../../src/cli/bootstrap.js'
+import { loadConfig, loadSecrets } from '../../src/lib/config.js'
+import { MEMBER_DENIED, chatRolesReady } from '../../src/lib/chat-roles.js'
+import { MattermostClient } from '../../src/lib/mattermost.js'
+import { ForgejoClient } from '../../src/lib/forgejo.js'
+import { requireDevInstance } from '../helpers/dev-instance.js'
+
+const tag = Date.now().toString(36)
+
+describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stack', () => {
+  let config: Awaited<ReturnType<typeof loadConfig>>
+  let mmAdmin: MattermostClient
+  let fjAdmin: ForgejoClient
+  let teamId: string
+  let botMm: MattermostClient
+  let botFj: ForgejoClient
+  let botToken: string
+  const botName = `itest-m-${tag}`
+
+  /** A plain team user, the way `office invite` creates one, logged in with its own session. */
+  async function plainUser(username: string): Promise<{ id: string; mm: MattermostClient }> {
+    const password = `It-${tag}-${username}-Zq9`
+    const u = await mmAdmin.createUser({ username, email: `${username}@office.local`, password })
+    await mmAdmin.addUserToTeam(teamId, u.id)
+    const res = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: username, password }) })
+    const token = res.headers.get('Token')
+    if (!token) throw new Error('member login failed')
+    return { id: u.id, mm: new MattermostClient(config.mattermostUrl, token) }
+  }
+
+  beforeAll(async () => {
+    requireDevInstance()
+    await bootstrap()
+    config = await loadConfig()
+    const secrets = await loadSecrets()
+    if (!secrets) throw new Error('no secrets after bootstrap')
+    teamId = secrets.mattermost.teamId
+    mmAdmin = new MattermostClient(config.mattermostUrl, secrets.mattermost.adminToken)
+    fjAdmin = new ForgejoClient(config.forgejoUrl, secrets.forgejo.adminToken)
+    const bot = await createAgentIdentity(botName, 'Members Test Bot', 'bot for the members integration test')
+    botToken = bot.mattermost.token
+    botMm = new MattermostClient(config.mattermostUrl, botToken)
+    botFj = new ForgejoClient(config.forgejoUrl, bot.forgejo.token)
+  }, 300_000)
+
+  afterAll(async () => { await retireAgentIdentity(botName) }, 60_000)
+
+  it('bootstrap restricts plain team users', async () => {
+    expect(await chatRolesReady(mmAdmin)).toBe(true)
+  })
+
+  it('a plain team user sees only channels they were added to', async () => {
+    const shared = await mmAdmin.createChannel({ teamId, name: `shared-${tag}`, displayName: 'shared', purpose: 'itest', type: 'O' })
+    const hidden = await mmAdmin.createChannel({ teamId, name: `hidden-${tag}`, displayName: 'hidden', purpose: 'itest', type: 'O' })
+    await mmAdmin.createPost({ channelId: hidden.id, message: `secret-${tag}` })
+    const member = await plainUser(`mem-${tag}`)
+    await mmAdmin.addToChannel(shared.id, member.id)
+
+    const post = await member.mm.createPost({ channelId: shared.id, message: 'hello from the member' })
+    expect(post.id).toBeTruthy()
+    await expect(member.mm.getPublicChannels(teamId)).rejects.toThrow(/403/)
+    await expect(member.mm.getChannelByName(teamId, hidden.name)).rejects.toThrow(/403/)
+    await expect(member.mm.getChannelPosts(hidden.id)).rejects.toThrow(/403/)
+    await expect(member.mm.addToChannel(hidden.id, member.id)).rejects.toThrow(/403/)
+    expect(await member.mm.searchPosts(teamId, `secret-${tag}`)).toEqual([])
+    await expect(member.mm.createChannel({ teamId, name: `mine-${tag}`, displayName: 'mine', purpose: '', type: 'O' })).rejects.toThrow(/403/)
+  }, 60_000)
+
+  it('an agent bot still lists, reads, joins and creates channels', async () => {
+    const other = await mmAdmin.createChannel({ teamId, name: `later-${tag}`, displayName: 'later', purpose: 'itest', type: 'O' })
+    await mmAdmin.createPost({ channelId: other.id, message: 'for the bot' })
+    const me = await botMm.me()
+    expect((await botMm.getPublicChannels(teamId)).some(c => c.id === other.id)).toBe(true)
+    expect((await botMm.getChannelByName(teamId, other.name)).id).toBe(other.id)
+    await botMm.addToChannel(other.id, me.id)
+    expect((await botMm.getChannelPosts(other.id)).length).toBeGreaterThan(0)
+    const created = await botMm.createChannel({ teamId, name: `bot-${tag}`, displayName: 'bot', purpose: 'itest', type: 'O' })
+    expect(created.id).toBeTruthy()
+  }, 60_000)
+
+  it('an agent bot cannot manage the team', async () => {
+    const victim = await plainUser(`vic-${tag}`)
+    const res = await fetch(`${config.mattermostUrl}/api/v4/teams/${teamId}/members/${victim.id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${botToken}` },
+    })
+    expect(res.status).toBe(403)
+  }, 30_000)
+
+  it('the org and every repo are private, and agents still reach them', async () => {
+    expect((await fjAdmin.getOrg(config.forgejoOrg))?.visibility).toBe('private')
+    const repos = await fjAdmin.listOrgRepos(config.forgejoOrg)
+    expect(repos.length).toBeGreaterThan(0)
+    expect(repos.every(r => r.private)).toBe(true)
+    expect(await botFj.getRepo(config.forgejoOrg, config.ticketsRepo)).toBeTruthy()
+    const anon = await fetch(`${config.forgejoUrl}/api/v1/repos/${config.forgejoOrg}/${config.ticketsRepo}`)
+    expect(anon.status).toBe(404)
+  }, 30_000)
+
+  it('an office from before this change converges: stock roles, a demoted bot and public repos', async () => {
+    // Put the stack back into the state an older office is in.
+    const secrets = await loadSecrets()
+    if (!secrets) throw new Error('no secrets')
+    const admin = { Authorization: `Bearer ${secrets.mattermost.adminToken}`, 'Content-Type': 'application/json' }
+    const role = await mmAdmin.getRoleByName('team_user')
+    await mmAdmin.patchRolePermissions(role.id, [...new Set([...role.permissions, ...MEMBER_DENIED])])
+    const bot = await botMm.me()
+    await fetch(`${config.mattermostUrl}/api/v4/teams/${teamId}/members/${bot.id}/schemeRoles`, { method: 'PUT', headers: admin, body: JSON.stringify({ scheme_admin: false, scheme_user: true }) })
+    const fj = { Authorization: `token ${secrets.forgejo.adminToken}`, 'Content-Type': 'application/json' }
+    await fetch(`${config.forgejoUrl}/api/v1/orgs/${config.forgejoOrg}`, { method: 'PATCH', headers: fj, body: JSON.stringify({ visibility: 'public' }) })
+    await fetch(`${config.forgejoUrl}/api/v1/repos/${config.forgejoOrg}/${config.ticketsRepo}`, { method: 'PATCH', headers: fj, body: JSON.stringify({ private: false }) })
+    expect(await chatRolesReady(mmAdmin)).toBe(false)
+    expect((await mmAdmin.getTeamMember(teamId, bot.id)).scheme_admin).toBe(false)
+
+    await ensureOfficePolicies()
+
+    expect(await chatRolesReady(mmAdmin)).toBe(true)
+    expect((await mmAdmin.getTeamMember(teamId, bot.id)).scheme_admin).toBe(true)
+    expect((await fjAdmin.getOrg(config.forgejoOrg))?.visibility).toBe('private')
+    expect((await fjAdmin.listOrgRepos(config.forgejoOrg)).every(r => r.private)).toBe(true)
+    // The bot still works after the round trip.
+    expect((await botMm.getPublicChannels(teamId)).length).toBeGreaterThan(0)
+  }, 60_000)
+})

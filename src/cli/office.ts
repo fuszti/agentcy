@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto'
 import net from 'node:net'
 import type { AgentRecord, Harness } from '../lib/types.js'
 import { agentStateDir, listAgents, loadAgent, loadConfig, loadSecrets, repoRoot, saveAgent, saveConfig, stateDir } from '../lib/config.js'
-import { bootstrap, createAgentIdentity, retireAgentIdentity } from './bootstrap.js'
+import { bootstrap, createAgentIdentity, ensureOfficePolicies, retireAgentIdentity } from './bootstrap.js'
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import { agentBrainDir, commitBrain, ensureBrain, prepareAgentGitIdentity, projectBrainDir, seedAgentBrain, workspaceDir, writeWorkspaceInstructions } from '../lib/workspace.js'
@@ -105,6 +105,7 @@ async function ensureInfra() {
   assertStackOwnership(root)
   const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit', env: composeEnv() })
   if (r.status !== 0) throw new Error('docker compose up failed')
+  await ensureOfficePolicies()
 }
 
 // ------------------------------------------------------------------ start / stop
