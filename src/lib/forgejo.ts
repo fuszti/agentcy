@@ -121,6 +121,14 @@ export interface Notification {
 }
 
 /** Forgejo REST client. */
+/** The Forgejo account behind a comment or an issue, and when it was created. */
+export interface TicketActor { login: string; id: number; createdAt: string }
+interface RawActor { user?: { login?: string; id?: number }; created_at?: string }
+function toActor(raw: RawActor): TicketActor | undefined {
+  const { user, created_at } = raw
+  return user?.login && typeof user.id === 'number' && created_at ? { login: user.login, id: user.id, createdAt: created_at } : undefined
+}
+
 export class ForgejoClient {
   constructor(
     private baseUrl: string,
@@ -443,11 +451,10 @@ export class ForgejoClient {
     }
   }
 
-  /** Login of who opened an issue or pull request (the issues endpoint serves both). */
-  async issueAuthor(owner: string, repo: string, number: number): Promise<string | undefined> {
+  /** Who opened an issue or pull request and when (the issues endpoint serves both). */
+  async issueInfo(owner: string, repo: string, number: number): Promise<TicketActor | undefined> {
     try {
-      const issue = await this.request<{ user?: { login?: string } }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`)
-      return issue.user?.login
+      return toActor(await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`))
     } catch {
       return undefined
     }
@@ -677,13 +684,12 @@ export class ForgejoClient {
     }))
   }
 
-  /** Resolve the author login from a latest-comment URL, if reachable. */
-  async latestCommentAuthor(commentUrl: string): Promise<string | undefined> {
+  /** Who wrote the comment behind a latest-comment URL, and when; undefined if unreachable. */
+  async commentInfo(commentUrl: string): Promise<TicketActor | undefined> {
     try {
       const res = await fetch(commentUrl, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(30_000) })
       if (!res.ok) return undefined
-      const comment = (await res.json()) as { user?: { login?: string } }
-      return comment.user?.login
+      return toActor((await res.json()) as RawActor)
     } catch {
       return undefined
     }

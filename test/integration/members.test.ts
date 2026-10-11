@@ -11,7 +11,7 @@ import { cmdInvite, cmdMember, cmdUninvite, type MemberDeps } from '../../src/cl
 import { realMemberDeps } from '../../src/cli/member-deps.js'
 import { loadMembers } from '../../src/lib/members.js'
 import { saveProject } from '../../src/lib/projects.js'
-import { classifyPost, channelTypeOf, findHuman } from '../../src/mcp/policy.js'
+import { classifyPost, channelTypeOf, findHuman, ticketCause } from '../../src/mcp/policy.js'
 import { rosterCache } from '../../src/lib/members.js'
 import { prepareAgentGitIdentity, workspaceDir } from '../../src/lib/workspace.js'
 import type { ChatPost } from '../../src/lib/types.js'
@@ -296,11 +296,13 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
         if (!note) await new Promise(r => setTimeout(r, 1000))
       }
       if (!note?.subject.latest_comment_url) throw new Error('the assigned bot got no notification for the member comment')
-      const author = await botFj.latestCommentAuthor(note.subject.latest_comment_url)
-      expect(author).toBe(username)
+      const commentNote = await botFj.commentInfo(note.subject.latest_comment_url)
+      expect(commentNote?.login).toBe(username)
       const owner = await mmAdmin.getUserByUsername(config.human.username)
       const humans = rosterCache(repoRoot(), { userId: owner.id, username: owner.username })
-      expect(findHuman(humans(), { username: author })?.role).toBe('member')
+      const cause = ticketCause(note, commentNote, await botFj.issueInfo(config.forgejoOrg, web, issue.number))
+      expect(cause?.login).toBe(username)
+      expect(findHuman(humans(), { forgejoUserId: cause?.id })?.role).toBe('member')
     }, 60_000)
 
     it('an agent clones a private project repo with its own credentials, the way the harness does', async () => {

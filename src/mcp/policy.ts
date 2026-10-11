@@ -61,6 +61,29 @@ export function findHuman(humans: Human[], who: { userId?: string; username?: st
   return undefined
 }
 
+/** How close a comment or an issue's creation must be to the notification to count as its cause. */
+export const TICKET_CAUSE_WINDOW_MS = 60_000
+
+/**
+ * Who caused a Forgejo notification, only when that is certain. A notification also fires for
+ * assignments, label changes and edits by someone else, so "the latest commenter" or "the issue
+ * opener" alone would attribute those to the wrong person (and could pass a freeze as the owner).
+ * The latest comment counts when it was written within a minute of the notification; else the issue
+ * author counts when the issue was created within a minute of it; otherwise nobody.
+ */
+export function ticketCause(
+  note: { updated_at?: string },
+  comment?: { login: string; id: number; createdAt: string },
+  issue?: { login: string; id: number; createdAt: string },
+): { login: string; id: number } | undefined {
+  const at = Date.parse(note.updated_at ?? '')
+  if (Number.isNaN(at)) return undefined
+  const near = (iso: string): boolean => Math.abs(Date.parse(iso) - at) <= TICKET_CAUSE_WINDOW_MS
+  if (comment && near(comment.createdAt)) return { login: comment.login, id: comment.id }
+  if (issue && near(issue.createdAt)) return { login: issue.login, id: issue.id }
+  return undefined
+}
+
 /** A delivery the watchdog expects a chat answer to. Ticket events are answered in the ticket. */
 export function countsAsHumanDelivery(ev: InboundEvent): boolean {
   return ev.fromHuman && ev.kind !== 'ticket'

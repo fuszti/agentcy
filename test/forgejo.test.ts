@@ -37,21 +37,21 @@ describe('ForgejoClient', () => {
     expect(notes[0].subject.latest_comment_url).toBe('http://fj/api/v1/repos/o/r/issues/comments/99')
   })
 
-  it('latestCommentAuthor resolves the login from the comment URL', async () => {
+  it('commentInfo resolves login, id and time from the comment URL', async () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => {
       if (url.includes('/comments/99')) {
-        return Promise.resolve(jsonResponse({ user: { login: 'kim' } }))
+        return Promise.resolve(jsonResponse({ user: { login: 'kim', id: 9 }, created_at: '2026-10-11T10:00:00Z' }))
       }
       return Promise.resolve(new Response(null, { status: 404 }))
     }))
     const fj = new ForgejoClient('http://fj', 'tok')
-    expect(await fj.latestCommentAuthor('http://fj/api/v1/repos/o/r/issues/comments/99')).toBe('kim')
+    expect(await fj.commentInfo('http://fj/api/v1/repos/o/r/issues/comments/99')).toEqual({ login: 'kim', id: 9, createdAt: '2026-10-11T10:00:00Z' })
   })
 
-  it('latestCommentAuthor returns undefined on failure', async () => {
+  it('commentInfo returns undefined on failure', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('down'))))
     const fj = new ForgejoClient('http://fj', 'tok')
-    expect(await fj.latestCommentAuthor('http://fj/api/v1/repos/o/r/issues/comments/99')).toBeUndefined()
+    expect(await fj.commentInfo('http://fj/api/v1/repos/o/r/issues/comments/99')).toBeUndefined()
   })
 
   it('treats 205 Reset Content as empty success (L12)', async () => {
@@ -252,11 +252,13 @@ describe('ForgejoClient privacy and collaborators', () => {
     await expect(new ForgejoClient('http://fj', 'tok').getUserIdByName('x')).rejects.toThrow(/500/)
   })
 
-  it('issueAuthor returns the poster login, or undefined when the issue cannot be read', async () => {
+  it('issueInfo returns the poster and creation time, or undefined when the issue cannot be read or lacks them', async () => {
+    capture(() => jsonResponse({ number: 7, user: { login: 'alice', id: 41 }, created_at: '2026-10-11T09:00:00Z' }))
+    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toEqual({ login: 'alice', id: 41, createdAt: '2026-10-11T09:00:00Z' })
     capture(() => jsonResponse({ number: 7, user: { login: 'alice' } }))
-    expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 7)).toBe('alice')
+    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 7)).toBeUndefined()
     capture(() => jsonResponse({ message: 'nope' }, 404))
-    expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 8)).toBeUndefined()
+    expect(await new ForgejoClient('http://fj', 'tok').issueInfo('office', 'web', 8)).toBeUndefined()
   })
 })
 

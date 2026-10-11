@@ -22,7 +22,7 @@ import {
   sanitizeAttachmentFilename,
   workspaceDir,
 } from '../lib/workspace.js'
-import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, countsAsHumanDelivery, findHuman, firstCatchUpCursor, renderDigest, renderEvents, type AgentContext } from './policy.js'
+import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, countsAsHumanDelivery, findHuman, firstCatchUpCursor, renderDigest, renderEvents, ticketCause, type AgentContext } from './policy.js'
 import { ClaudeTmuxWakeAdapter } from '../lib/harness/claude.js'
 import { OpencodeWakeAdapter } from '../lib/harness/opencode.js'
 import { activeMembers, loadMembers, rosterCache } from '../lib/members.js'
@@ -789,11 +789,13 @@ async function pollTickets() {
       const num = Number(/\/(?:issues|pulls)\/(\d+)/.exec(url)?.[1] ?? 0)
       const repo = n.repository.full_name ?? defaultRepo
       const [repoOwner, repoName] = repo.split('/')
-      // Who caused this: the latest commenter, else whoever opened the issue or PR.
-      const from = (n.subject.latest_comment_url ? await fj.latestCommentAuthor(n.subject.latest_comment_url).catch(() => undefined) : undefined)
-        ?? (num && repoOwner && repoName ? await fj.issueAuthor(repoOwner, repoName, num) : undefined)
-      // Forgejo has its own accounts; a person uses the same username there.
-      const author = from ? findHuman(humans(), { username: from }) : undefined
+      // Who caused this, only when certain (see ticketCause); else it stays a plain Forgejo event.
+      const comment = n.subject.latest_comment_url ? await fj.commentInfo(n.subject.latest_comment_url) : undefined
+      const issue = num && repoOwner && repoName ? await fj.issueInfo(repoOwner, repoName, num) : undefined
+      const cause = ticketCause(n, comment, issue)
+      const from = cause?.login
+      // People are matched by Forgejo user id: a login can be renamed or taken over.
+      const author = cause ? findHuman(humans(), { forgejoUserId: cause.id }) : undefined
       const isPull = n.subject.type === 'Pull'
       const text = isPull
         ? `PR ${repo}#${num}: "${n.subject.title ?? ''}" needs your attention (review requested / commented / approved / changes requested). Open it with pr_get.`
