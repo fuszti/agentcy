@@ -59,7 +59,7 @@ Keys: `bin/office vault set opencode-go` needs a TTY and hidden input. Never pas
 | Tier | Command | Needs | Covers |
 |---|---|---|---|
 | Unit | `npx vitest run` (or `npm run check` = tsc, biome lint, vitest) | nothing; no Docker | pure logic. One file: `npx vitest run test/policy.test.ts`; one test: add `-t "name"`. |
-| Integration | `npm run test:integration` (`OFFICE_INTEGRATION=1`) | a running dev instance | `test/integration/platform.test.ts`: bootstrap, bot identities, WebSocket mentions, thread reads, Forgejo. Creates `itest-a` / `itest-b` and retires them. |
+| Integration | `npm run test:integration` (`OFFICE_INTEGRATION=1`) | a running dev instance (files run one after another, since each bootstraps the shared stack) | `test/integration/platform.test.ts`: bootstrap, bot identities, WebSocket mentions, thread reads, Forgejo. Creates `itest-a` / `itest-b` and retires them. |
 | End to end | `npm run test:e2e` (`OFFICE_E2E=1`) | dev instance, `tmux`, `opencode` | `test/e2e/agent-loop.test.ts`: hires `e2e-<time>` on `helperModel` through `bin/office hire`, DMs it as the owner, waits up to 240 s for any post by the bot in the DM, retires it. Asserts that a reply exists, not what it says. |
 | opencode live | `OPENCODE_LIVE=1 npx vitest run test/opencode.test.ts` | a running opencode server | the HTTP client. |
 
