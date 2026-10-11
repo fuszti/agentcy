@@ -1,13 +1,14 @@
 // Delivery policy: classify inbound posts, batch them, render wake prompts and
 // guard outbound posts. Pure logic, no I/O (design.md §4.4 and §4.5).
 
-import type { ChatPost, GuardLimits, InboundEvent, WatchMode } from '../lib/types.js'
+import type { ChatPost, GuardLimits, Human, InboundEvent, WatchMode } from '../lib/types.js'
 
 /** Everything the policy needs to know about the agent it filters for. */
 export interface AgentContext {
   username: string
   userId: string
-  humanUsernames: string[]
+  /** The owner and the active invited members. Posts are matched by Mattermost user id. */
+  humans: Human[]
   /** System usernames are treated like the owner for room-request detection only. */
   systemUsernames?: string[]
   agentChannelPrefix: string
@@ -48,6 +49,21 @@ function mentionsAsWord(text: string, name: string): boolean {
 
 const BROADCAST = /(^|[^@\w.-])@(all|channel|here)(?![\w-])/i
 
+/**
+ * Who of the roster this is. A Mattermost user can rename themselves, so a user id decides when
+ * one is given; the username is only used where no id exists (Forgejo logins).
+ */
+export function findHuman(humans: Human[], who: { userId?: string; username?: string }): Human | undefined {
+  if (who.userId !== undefined) return humans.find(h => h.userId === who.userId)
+  if (who.username !== undefined) return humans.find(h => h.username === who.username)
+  return undefined
+}
+
+/** A delivery the watchdog expects a chat answer to. Ticket events are answered in the ticket. */
+export function countsAsHumanDelivery(ev: InboundEvent): boolean {
+  return ev.fromHuman && ev.kind !== 'ticket'
+}
+
 /** Map one inbound post to the event the agent should see, or null when it must not be woken. */
 export function classifyPost(
   ctx: AgentContext,
@@ -59,7 +75,8 @@ export function classifyPost(
   const hasFiles = (post.files?.length ?? 0) > 0
   if ((text.trim() === '' && !hasFiles) || (meta.postType ?? post.type ?? '').startsWith('system_')) return null
 
-  const fromHuman = ctx.humanUsernames.includes(post.username)
+  const human = findHuman(ctx.humans, { userId: post.userId })
+  const fromHuman = human !== undefined
   const fromSystem = ctx.systemUsernames?.includes(post.username) ?? false
   const roomRequestSource = fromHuman || fromSystem
   const channelType: ChannelType =
@@ -78,6 +95,7 @@ export function classifyPost(
     postId: post.id,
     threadId: post.rootId ?? post.id
   }
+  if (human) ev.role = human.role
   if (hasFiles) {
     ev.attachments = post.files!.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: f.size }))
   }
@@ -288,6 +306,7 @@ function renderEventLine(ev: InboundEvent): string {
       `reason="${escapeAttr(ev.ticket.reason)}"`,
       `from="${escapeAttr(ev.from)}"`,
       `human="${human}"`,
+      ...(ev.role ? [`role="${escapeAttr(ev.role)}"`] : []),
       `at="${escapeAttr(ev.at)}"`
     )
   } else {
@@ -295,10 +314,11 @@ function renderEventLine(ev: InboundEvent): string {
       `channel="${escapeAttr(ev.channel ?? '')}"`,
       `channel_type="${escapeAttr(ev.channelType ?? '')}"`,
       `from="${escapeAttr(ev.from)}"`,
-      `human="${human}"`
+      `human="${human}"`,
+      ...(ev.role ? [`role="${escapeAttr(ev.role)}"`] : [])
     )
     if (ev.fromHuman && ev.channelType === 'agent-only' && ev.kind !== 'room') {
-      attrs.push(`note="owner FYI in agent-only channel"`)
+      attrs.push(`note="${ev.role === 'member' ? 'member' : 'owner'} FYI in agent-only channel"`)
     }
     if (ev.note) attrs.push(`guide="${escapeAttr(ev.note)}"`)
     attrs.push(

@@ -238,6 +238,8 @@ export interface InboundEvent {
   at: string // ISO
   from: string // username
   fromHuman: boolean
+  /** Set when the author is a person: the owner or an invited member. */
+  role?: HumanRole
   text: string
   /** Mattermost context. */
   channel?: string // channel name (slug); for DMs "dm"

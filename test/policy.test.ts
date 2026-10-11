@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ChatPost, InboundEvent } from '../src/lib/types.js'
+import type { ChatPost, Human, InboundEvent } from '../src/lib/types.js'
 import type { AgentContext } from '../src/mcp/policy.js'
 import {
   firstCatchUpCursor,
@@ -7,6 +7,8 @@ import {
   PostGuard,
   channelTypeOf,
   classifyPost,
+  countsAsHumanDelivery,
+  findHuman,
   isAckOnly,
   renderDigest,
   renderEvents
@@ -18,7 +20,7 @@ function ctx(over: Partial<AgentContext> = {}): AgentContext {
   return {
     username: 'ada',
     userId: 'u-ada',
-    humanUsernames: ['owner'],
+    humans: [{ userId: 'u-owner', username: 'owner', role: 'owner' }],
     agentChannelPrefix: 'ag-',
     watch: {},
     defaultWatch: 'digest',
@@ -28,12 +30,13 @@ function ctx(over: Partial<AgentContext> = {}): AgentContext {
 }
 
 function post(over: Partial<ChatPost> = {}): ChatPost {
+  const username = over.username ?? 'kim'
   return {
     id: 'p1',
     channelId: 'c1',
     channel: 'office',
-    userId: 'u-kim',
-    username: 'kim',
+    userId: `u-${username}`,
+    username,
     message: 'hello there',
     createAt: T0,
     ...over
@@ -582,5 +585,122 @@ describe('firstCatchUpCursor', () => {
 describe('system posts carry their type on the post itself', () => {
   it('drops "owner added @x to the channel" whether it arrives live or through catch-up (no postType in meta)', () => {
     expect(classifyPost(ctx(), post({ message: 'owner added @kim to the channel.', type: 'system_add_to_channel' }), meta())).toBeNull()
+  })
+})
+
+const OWNER: Human = { userId: 'u-owner', username: 'owner', role: 'owner' }
+const ALICE: Human = { userId: 'u-alice', username: 'alice', role: 'member', projects: ['web'] }
+const withAlice = () => ctx({ humans: [OWNER, ALICE] })
+
+describe('findHuman', () => {
+  it('matches by user id, and ignores the username when an id is given', () => {
+    expect(findHuman([OWNER, ALICE], { userId: 'u-alice' })).toBe(ALICE)
+    expect(findHuman([OWNER, ALICE], { userId: 'u-other', username: 'alice' })).toBeUndefined()
+  })
+  it('matches by username only when no id is given', () => {
+    expect(findHuman([OWNER, ALICE], { username: 'owner' })).toBe(OWNER)
+    expect(findHuman([OWNER, ALICE], { username: 'nobody' })).toBeUndefined()
+    expect(findHuman([OWNER, ALICE], {})).toBeUndefined()
+  })
+})
+
+describe('classifyPost with invited members', () => {
+  it('marks a member as a person with role member, and the owner with role owner', () => {
+    const fromMember = classifyPost(withAlice(), post({ username: 'alice', message: '@ada please look' }), meta({ mentions: ['u-ada'] }))
+    expect(fromMember).toMatchObject({ kind: 'mention', from: 'alice', fromHuman: true, role: 'member' })
+    const fromOwner = classifyPost(withAlice(), post({ username: 'owner', message: '@ada please look' }), meta({ mentions: ['u-ada'] }))
+    expect(fromOwner).toMatchObject({ fromHuman: true, role: 'owner' })
+  })
+
+  it('sets no role on an agent post', () => {
+    const ev = classifyPost(withAlice(), post({ username: 'kim', message: '@ada hi' }), meta({ mentions: ['u-ada'] }))
+    expect(ev?.fromHuman).toBe(false)
+    expect(ev).not.toHaveProperty('role')
+  })
+
+  it("treats a member's unaddressed top-level post as a room request", () => {
+    const ev = classifyPost(withAlice(), post({ username: 'alice', message: 'can someone check the build?' }), meta())
+    expect(ev).toMatchObject({ kind: 'room', fromHuman: true, role: 'member' })
+  })
+
+  it("does not make a room request of a member's reply or of a post that addresses someone", () => {
+    expect(classifyPost(withAlice(), post({ username: 'alice', rootId: 'root1' }), meta())?.kind).toBe('digest-item')
+    expect(classifyPost(withAlice(), post({ username: 'alice', message: '@kim can you check?' }), meta())?.kind).toBe('digest-item')
+  })
+
+  it('treats @all from a member as a mention', () => {
+    const ev = classifyPost(withAlice(), post({ username: 'alice', message: '@all standup in 5' }), meta())
+    expect(ev?.kind).toBe('mention')
+  })
+
+  it('still recognises a member who renamed themselves, by user id', () => {
+    const ev = classifyPost(withAlice(), post({ username: 'alice-new', userId: 'u-alice', message: 'hi all' }), meta())
+    expect(ev).toMatchObject({ kind: 'room', fromHuman: true, role: 'member', from: 'alice-new' })
+  })
+
+  it('does not recognise another account that took a member username', () => {
+    const ev = classifyPost(withAlice(), post({ username: 'alice', userId: 'u-impostor', message: 'hi all' }), meta())
+    expect(ev?.fromHuman).toBe(false)
+    expect(ev).not.toHaveProperty('role')
+    expect(ev?.kind).toBe('digest-item')
+  })
+
+  it('does not treat a removed member as a person', () => {
+    const ev = classifyPost(ctx(), post({ username: 'alice', message: 'hi all' }), meta())
+    expect(ev?.fromHuman).toBe(false)
+  })
+
+  it('a member direct message is a dm with role member', () => {
+    const ev = classifyPost(withAlice(), post({ username: 'alice', message: 'quick question' }), meta({ channelType: 'dm' }))
+    expect(ev).toMatchObject({ kind: 'dm', fromHuman: true, role: 'member' })
+  })
+})
+
+describe('rendering the role', () => {
+  const base: InboundEvent = {
+    kind: 'mention', id: 'mm:p1', at: '2026-10-11T10:00:00.000Z', from: 'alice', fromHuman: true, role: 'member',
+    text: 'hi', channel: 'proj-web', channelType: 'mixed', postId: 'p1', threadId: 'p1',
+  }
+  it('renders role next to human for a member and for the owner', () => {
+    expect(renderEvents('ada', [base])).toContain('from="alice" human="true" role="member"')
+    expect(renderEvents('ada', [{ ...base, from: 'owner', role: 'owner' }])).toContain('from="owner" human="true" role="owner"')
+  })
+  it('renders no role attribute on agent events', () => {
+    const out = renderEvents('ada', [{ ...base, from: 'kim', fromHuman: false, role: undefined }])
+    expect(out).toContain('human="false"')
+    expect(out).not.toContain('role=')
+  })
+  it('renders the role on a ticket event', () => {
+    const ticket: InboundEvent = {
+      kind: 'ticket', id: 'fj:1:x', at: '2026-10-11T10:00:00.000Z', from: 'alice', fromHuman: true, role: 'member', text: 'needs attention',
+      ticket: { repo: 'office/web', number: 3, title: 'Bug', url: 'http://fj/office/web/issues/3', reason: 'Issue' },
+    }
+    expect(renderEvents('ada', [ticket])).toContain('from="alice" human="true" role="member"')
+  })
+  it('labels a member post in an agent-only channel as a member FYI, the owner as an owner FYI', () => {
+    const inAgentOnly = { ...base, kind: 'channel' as const, channel: 'ag-lobby', channelType: 'agent-only' as const }
+    expect(renderEvents('ada', [inAgentOnly])).toContain('note="member FYI in agent-only channel"')
+    expect(renderEvents('ada', [{ ...inAgentOnly, from: 'owner', role: 'owner' }])).toContain('note="owner FYI in agent-only channel"')
+    expect(renderEvents('ada', [{ ...inAgentOnly, from: 'owner', role: undefined }])).toContain('note="owner FYI in agent-only channel"')
+  })
+})
+
+describe('members and the delivery queue', () => {
+  it('keeps a member event while the office is frozen', () => {
+    const q = new DeliveryQueue({ digestMinutes: 10 })
+    q.setFrozen(true)
+    q.push({ kind: 'mention', id: 'mm:a', at: '2026-10-11T10:00:00.000Z', from: 'kim', fromHuman: false, text: 'x' })
+    q.push({ kind: 'mention', id: 'mm:b', at: '2026-10-11T10:00:01.000Z', from: 'alice', fromHuman: true, role: 'member', text: 'y' })
+    expect(q.takeImmediate().map(e => e.id)).toEqual(['mm:b'])
+  })
+})
+
+describe('countsAsHumanDelivery', () => {
+  it('is true for a chat event from a person and false for agents', () => {
+    expect(countsAsHumanDelivery({ kind: 'dm', id: 'a', at: '', from: 'alice', fromHuman: true, role: 'member', text: '' })).toBe(true)
+    expect(countsAsHumanDelivery({ kind: 'dm', id: 'b', at: '', from: 'kim', fromHuman: false, text: '' })).toBe(false)
+  })
+  it('is false for ticket events, which an agent answers in the ticket and not in chat', () => {
+    expect(countsAsHumanDelivery({ kind: 'ticket', id: 'c', at: '', from: 'owner', fromHuman: true, role: 'owner', text: '' })).toBe(false)
   })
 })

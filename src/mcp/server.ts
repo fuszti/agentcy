@@ -22,9 +22,10 @@ import {
   sanitizeAttachmentFilename,
   workspaceDir,
 } from '../lib/workspace.js'
-import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, firstCatchUpCursor, renderDigest, renderEvents, type AgentContext } from './policy.js'
+import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, countsAsHumanDelivery, findHuman, firstCatchUpCursor, renderDigest, renderEvents, type AgentContext } from './policy.js'
 import { ClaudeTmuxWakeAdapter } from '../lib/harness/claude.js'
 import { OpencodeWakeAdapter } from '../lib/harness/opencode.js'
+import { activeMembers, loadMembers, rosterCache } from '../lib/members.js'
 import { ensureInboxKey, queueSystemPrompt, verifyPrompt } from '../lib/inbox.js'
 import { buildRequest, listRequests, loadRequest, setRequestStatus, writeRequest } from '../lib/requests.js'
 import { formatProjectCreatedNotice, validateProjectRequest } from '../lib/project-requests.js'
@@ -69,10 +70,12 @@ const isFrozen = () => fs.existsSync(freezeFile)
 // ------------------------------------------------------------------ platform context
 const me = await mm.me()
 const team = await mm.getTeamByName(cfg.team)
-const humans = [cfg.human.username]
+// The owner plus invited members (state/members.json), re-read when that file changes.
+const ownerUser = await mm.getUserByUsername(cfg.human.username)
+const humans = rosterCache(root, { userId: ownerUser.id, username: ownerUser.username }, m => log(`roster: ${m}`))
 const systemUsernames = cfg.systemUsernames ?? []
 const ctx = (): AgentContext => ({
-  username: me.username, userId: me.id, humanUsernames: humans, systemUsernames,
+  username: me.username, userId: me.id, humans: humans(), systemUsernames,
   agentChannelPrefix: cfg.agentChannelPrefix,
   watch, defaultWatch: 'digest', participatedThreads: threads,
 })
@@ -112,16 +115,16 @@ function holdRoom(ev: InboundEvent) {
   pending.set(ev.id, ev); savePending()
   roomWait.set(ev.id, { ev, dueAt: Date.parse(ev.at) + HUMAN_BURST_MS + staggerFor(ev.postId ?? ev.id) })
 }
-/** Who (other than the owner and me) already took this post: an agent reaction or reply. */
+/** Who (other than a person and me) already took this post: an agent reaction or reply. */
 async function claimedBy(postId: string): Promise<string | undefined> {
   const reactions = await mm.getReactions(postId).catch(() => [])
   for (const r of reactions) {
-    if (r.user_id === me.id) continue
+    if (r.user_id === me.id || findHuman(humans(), { userId: r.user_id })) continue
     const u = await mm.getUser(r.user_id).catch(() => undefined)
-    if (u && !humans.includes(u.username)) return u.username
+    if (u) return u.username
   }
   const thread = await mm.getPostThread(postId).catch(() => [] as ChatPost[])
-  const reply = thread.find(p => p.id !== postId && p.userId !== me.id && !humans.includes(p.username))
+  const reply = thread.find(p => p.id !== postId && p.userId !== me.id && !findHuman(humans(), { userId: p.userId }))
   return reply?.username
 }
 async function releaseRooms() {
@@ -181,7 +184,7 @@ const kindOf = (ch: { name: string; type: string }) => channelTypeOf(ch.name, ch
 
 async function threadAuthors(rootId: string) {
   const posts = await mm.getPostThread(rootId)
-  return posts.map(p => ({ username: p.username, isHuman: humans.includes(p.username) }))
+  return posts.map(p => ({ username: p.username, isHuman: findHuman(humans(), { userId: p.userId }) !== undefined }))
 }
 
 function fmtPost(p: ChatPost): string {
@@ -383,7 +386,7 @@ server.registerTool('chat_download', {
 }))
 
 server.registerTool('office_directory', {
-  description: 'Who works here: the human owner and all agents (harness, model, status, focus, projects).',
+  description: 'Who works here: the human owner, invited members (role and projects) and all agents (harness, model, status, focus, projects).',
   inputSchema: {},
 }, guarded(async () => {
   const recs = (await Promise.all((await listAgents()).map(n => loadAgent(n)))).filter(Boolean) as AgentRecord[]
@@ -394,7 +397,11 @@ server.registerTool('office_directory', {
     try { focus = /Initial focus:\s*(.*)/.exec(fs.readFileSync(path.join(repoRoot(), 'brain/agents', a.name, 'persona.md'), 'utf8'))?.[1] ?? '' } catch { /* none */ }
     return { name: a.name, displayName: a.displayName, harness: a.harness, model: a.model, status: a.status, forkedFrom: a.forkedFrom?.parent, focus, projects: memberProjects(a.name) }
   })
-  return ok({ human: cfg.human, agents })
+  let members: { username: string; displayName: string; role: string; projects: string[]; channels: string[] }[] = []
+  try {
+    members = activeMembers(loadMembers(root)).map(m => ({ username: m.username, displayName: m.displayName, role: m.role, projects: m.projects, channels: m.channels }))
+  } catch (e) { log(`roster: ${(e as Error).message}`) }
+  return ok({ human: { ...cfg.human, role: 'owner' }, members, agents })
 }))
 
 server.registerTool('office_shift_ready', {
@@ -593,7 +600,7 @@ server.registerTool('project_list', {
     description: p.description,
     repo: p.repo,
     channel: p.channel,
-    members: [cfg.human.username, ...p.members],
+    members: [cfg.human.username, ...humans().filter(h => h.role === 'member' && h.projects?.includes(p.name)).map(h => h.username), ...p.members],
     clone_url: cloneUrl(p.name),
     is_member: !p.archived && p.members.includes(me.username),
     archived: p.archived ?? false,
@@ -758,9 +765,11 @@ server.registerTool('pr_merge', {
 function onPost(post: ChatPost, meta: { mentions: string[]; channelType: string; channelName: string; senderName: string }) {
   markSeen(post.createAt)
   if (post.userId === me.id) { rememberThread(post.rootId || post.id); return }
-  const isHuman = humans.includes(post.username)
-  if (isHuman && post.message.trim() === '!freeze') { fs.writeFileSync(freezeFile, new Date().toISOString()); log('frozen by human') }
-  if (isHuman && post.message.trim() === '!unfreeze') { fs.rmSync(freezeFile, { force: true }); log('unfrozen by human') }
+  const human = findHuman(humans(), { userId: post.userId })
+  const isHuman = human !== undefined
+  const isOwner = human?.role === 'owner'
+  if (isOwner && post.message.trim() === '!freeze') { fs.writeFileSync(freezeFile, new Date().toISOString()); log('frozen by human') }
+  if (isOwner && post.message.trim() === '!unfreeze') { fs.rmSync(freezeFile, { force: true }); log('unfrozen by human') }
   const kind = channelTypeOf(meta.channelName, meta.channelType, cfg.agentChannelPrefix)
   const ev = classifyPost(ctx(), post, { ...meta, channelType: kind })
   // Agent replies in a shared thread only wake you when they @mention you; otherwise they go to the digest.
@@ -776,17 +785,20 @@ async function pollTickets() {
     for (const n of notes) {
       const url: string = n.subject.html_url || n.subject.url || ''
       const num = Number(/\/(?:issues|pulls)\/(\d+)/.exec(url)?.[1] ?? 0)
-      const from = n.subject.latest_comment_url
-        ? await fj.latestCommentAuthor(n.subject.latest_comment_url).catch(() => undefined)
-        : undefined
       const repo = n.repository.full_name ?? defaultRepo
+      const [repoOwner, repoName] = repo.split('/')
+      // Who caused this: the latest commenter, else whoever opened the issue or PR.
+      const from = (n.subject.latest_comment_url ? await fj.latestCommentAuthor(n.subject.latest_comment_url).catch(() => undefined) : undefined)
+        ?? (num && repoOwner && repoName ? await fj.issueAuthor(repoOwner, repoName, num) : undefined)
+      // Forgejo has its own accounts; a person uses the same username there.
+      const author = from ? findHuman(humans(), { username: from }) : undefined
       const isPull = n.subject.type === 'Pull'
       const text = isPull
         ? `PR ${repo}#${num}: "${n.subject.title ?? ''}" needs your attention (review requested / commented / approved / changes requested). Open it with pr_get.`
         : `${n.subject.type ?? 'Issue'} "${n.subject.title ?? ''}" (${n.subject.state ?? ''}) needs your attention. Open it with ticket_get.`
       const ev: InboundEvent = {
         kind: 'ticket', id: `fj:${n.id}:${n.updated_at}`, at: n.updated_at ?? new Date().toISOString(),
-        from: from ?? 'forgejo', fromHuman: false,
+        from: from ?? 'forgejo', fromHuman: author !== undefined, ...(author ? { role: author.role } : {}),
         text,
         ticket: { repo, number: num, title: n.subject.title ?? '', url, reason: n.subject.type ?? 'notification' },
       }
@@ -861,13 +873,13 @@ async function deliveryTick() {
       const context = queue.takeDigest()
       await wake.deliver(renderEvents(me.username, evs) + (context.length ? `\n\nRecent channel context:\n${renderDigest(me.username, context)}` : ''))
       delivered([...evs, ...context])
-      const hasHuman = [...evs, ...context].some(e => e.fromHuman)
+      const hasHuman = [...evs, ...context].some(countsAsHumanDelivery)
       log(`delivered ${evs.length} events${hasHuman ? ' human=true' : ''}`)
     } else {
       const items = queue.takeDigest()
       await wake.deliver(renderDigest(me.username, items))
       delivered(items)
-      const digestHuman = items.some(e => e.fromHuman)
+      const digestHuman = items.some(countsAsHumanDelivery)
       log(`delivered digest of ${items.length}${digestHuman ? ' human=true' : ''}`)
     }
   } catch (e) {
