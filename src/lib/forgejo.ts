@@ -176,12 +176,25 @@ export class ForgejoClient {
     })
   }
 
-  async adminResetPassword(username: string, password: string): Promise<void> {
+  async adminResetPassword(username: string, password: string, mustChange = false): Promise<void> {
     await this.request('PATCH', `/admin/users/${encodeURIComponent(username)}`, {
       password,
-      must_change_password: false,
+      must_change_password: mustChange,
+      login_name: username,
+      source_id: 0,
     })
   }
+
+
+  /** Block or unblock an account. A blocked account cannot log in or use its tokens. */
+  async setProhibitLogin(username: string, prohibit: boolean): Promise<void> {
+    await this.request('PATCH', `/admin/users/${encodeURIComponent(username)}`, {
+      prohibit_login: prohibit,
+      login_name: username,
+      source_id: 0,
+    })
+  }
+
 
   async listTokensForUser(
     username: string,
@@ -273,16 +286,30 @@ export class ForgejoClient {
     return this.request('POST', '/orgs', {
       username,
       full_name: fullName ?? username,
-      visibility: 'public',
+      visibility: 'private',
     })
   }
 
-  async getOrg(name: string): Promise<{ id: number; name: string } | undefined> {
+  async getOrg(name: string): Promise<{ id: number; name: string; visibility: string } | undefined> {
     try {
       return await this.request('GET', `/orgs/${encodeURIComponent(name)}`)
     } catch (err) {
       if ((err as Error).message.includes('404')) return undefined
       throw err
+    }
+  }
+
+  async setOrgVisibility(org: string, visibility: 'public' | 'limited' | 'private'): Promise<void> {
+    await this.request('PATCH', `/orgs/${encodeURIComponent(org)}`, { visibility })
+  }
+
+  /** Every repo of an org. Forgejo caps a page at 50, so this reads all pages. */
+  async listOrgRepos(org: string): Promise<{ name: string; private: boolean }[]> {
+    const out: { name: string; private: boolean }[] = []
+    for (let page = 1; ; page++) {
+      const batch = await this.request<{ name: string; private: boolean }[]>('GET', `/orgs/${encodeURIComponent(org)}/repos?limit=50&page=${String(page)}`)
+      out.push(...batch.map(r => ({ name: r.name, private: r.private })))
+      if (batch.length < 50) return out
     }
   }
 
@@ -335,7 +362,7 @@ export class ForgejoClient {
     return this.request('POST', `/orgs/${encodeURIComponent(org)}/repos`, {
       name,
       auto_init: input.autoInit ?? false,
-      private: false,
+      private: true,
       default_branch: 'main',
     })
   }
@@ -351,6 +378,34 @@ export class ForgejoClient {
 
   async archiveRepo(owner: string, repo: string): Promise<void> {
     await this.request('PATCH', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { archived: true })
+  }
+
+  async setRepoPrivate(owner: string, repo: string): Promise<void> {
+    await this.request('PATCH', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { private: true })
+  }
+
+  /** Give one user access to one repo, without org or team membership. */
+  async addCollaborator(owner: string, repo: string, username: string, permission: 'read' | 'write' = 'write'): Promise<void> {
+    await this.request('PUT', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(username)}`, { permission })
+  }
+
+  /** A repo or user that is already gone counts as removed. */
+  async removeCollaborator(owner: string, repo: string, username: string): Promise<void> {
+    try {
+      await this.request('DELETE', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(username)}`)
+    } catch (err) {
+      if (!(err as Error).message.includes('failed: 404')) throw err
+    }
+  }
+
+  /** Login of who opened an issue or pull request (the issues endpoint serves both). */
+  async issueAuthor(owner: string, repo: string, number: number): Promise<string | undefined> {
+    try {
+      const issue = await this.request<{ user?: { login?: string } }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`)
+      return issue.user?.login
+    } catch {
+      return undefined
+    }
   }
 
   async createBranchProtection(owner: string, repo: string, branch: string, input: Partial<CreateBranchProtectionInput> = {}): Promise<void> {
@@ -592,4 +647,30 @@ export class ForgejoClient {
   async markNotificationRead(id: string): Promise<void> {
     await this.request('PATCH', `/notifications/threads/${id}`)
   }
+}
+
+export interface PrivacyClient {
+  getOrg(name: string): Promise<{ visibility: string } | undefined>
+  setOrgVisibility(org: string, visibility: 'private'): Promise<void>
+  listOrgRepos(org: string): Promise<{ name: string; private: boolean }[]>
+  setRepoPrivate(owner: string, repo: string): Promise<void>
+}
+
+/**
+ * Make the office org and all its repos private, so an invited member (a per-repo collaborator)
+ * sees only the repos they were given. Agents keep access through the `agents` team. Idempotent;
+ * returns what it changed.
+ */
+export async function ensureForgejoPrivacy(fj: PrivacyClient, org: string): Promise<{ org: boolean; repos: string[] }> {
+  const current = await fj.getOrg(org)
+  if (!current) return { org: false, repos: [] }
+  const repos: string[] = []
+  for (const r of await fj.listOrgRepos(org)) {
+    if (r.private) continue
+    await fj.setRepoPrivate(org, r.name)
+    repos.push(r.name)
+  }
+  const switchOrg = current.visibility !== 'private'
+  if (switchOrg) await fj.setOrgVisibility(org, 'private')
+  return { org: switchOrg, repos }
 }

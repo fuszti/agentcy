@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { ForgejoClient } from '../src/lib/forgejo.js'
+import { ForgejoClient, ensureForgejoPrivacy, type PrivacyClient } from '../src/lib/forgejo.js'
 
 function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(status === 204 || status === 205 ? null : JSON.stringify(body), {
@@ -123,5 +123,119 @@ describe('ForgejoClient', () => {
     await fj.submitReview('office', 'hello', 5, 'APPROVE', 'lgtm')
     expect(calls[0].url).toContain('/pulls/5/reviews')
     expect(calls[0].body).toEqual({ event: 'APPROVED', body: 'lgtm' })
+  })
+})
+
+function capture(replies: (req: { method: string; url: string }) => Response) {
+  const requests: { method: string; url: string; body?: unknown }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const req = { method: init?.method ?? 'GET', url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined }
+    requests.push(req)
+    return replies(req)
+  }))
+  return requests
+}
+
+describe('ForgejoClient privacy and collaborators', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('creates orgs private and repos private', async () => {
+    const reqs = capture((r) => r.method === 'GET' ? jsonResponse([]) : jsonResponse({ id: 1, name: 'x', html_url: 'http://fj/office/x' }, 201))
+    const fj = new ForgejoClient('http://fj', 'tok')
+    await fj.createOrg('office')
+    await fj.createOrgRepo('office', 'web', { autoInit: true })
+    expect(reqs.find(r => r.url.endsWith('/orgs') && r.method === 'POST')?.body).toMatchObject({ username: 'office', visibility: 'private' })
+    expect(reqs.find(r => r.url.endsWith('/orgs/office/repos') && r.method === 'POST')?.body).toMatchObject({ name: 'web', private: true })
+  })
+
+  it('getOrg returns the visibility', async () => {
+    capture(() => jsonResponse({ id: 3, name: 'office', visibility: 'public' }))
+    expect(await new ForgejoClient('http://fj', 'tok').getOrg('office')).toMatchObject({ visibility: 'public' })
+  })
+
+  it('listOrgRepos reads every page', async () => {
+    const page1 = Array.from({ length: 50 }, (_, i) => ({ name: `r${String(i)}`, private: false, extra: true }))
+    const reqs = capture((r) => jsonResponse(r.url.includes('page=1') ? page1 : r.url.includes('page=2') ? [{ name: 'last', private: true }] : []))
+    const repos = await new ForgejoClient('http://fj', 'tok').listOrgRepos('office')
+    expect(repos).toHaveLength(51)
+    expect(repos[0]).toEqual({ name: 'r0', private: false })
+    expect(repos[50]).toEqual({ name: 'last', private: true })
+    expect(reqs[0].url).toBe('http://fj/api/v1/orgs/office/repos?limit=50&page=1')
+  })
+
+  it('switches org visibility and repo privacy', async () => {
+    const reqs = capture(() => jsonResponse({}))
+    const fj = new ForgejoClient('http://fj', 'tok')
+    await fj.setOrgVisibility('office', 'private')
+    await fj.setRepoPrivate('office', 'web')
+    expect(reqs[0]).toEqual({ method: 'PATCH', url: 'http://fj/api/v1/orgs/office', body: { visibility: 'private' } })
+    expect(reqs[1]).toEqual({ method: 'PATCH', url: 'http://fj/api/v1/repos/office/web', body: { private: true } })
+  })
+
+  it('adds a write collaborator by default and removes one', async () => {
+    const reqs = capture(() => jsonResponse(null, 204))
+    const fj = new ForgejoClient('http://fj', 'tok')
+    await fj.addCollaborator('office', 'web', 'alice')
+    await fj.addCollaborator('office', 'web', 'bob', 'read')
+    await fj.removeCollaborator('office', 'web', 'alice')
+    expect(reqs[0]).toEqual({ method: 'PUT', url: 'http://fj/api/v1/repos/office/web/collaborators/alice', body: { permission: 'write' } })
+    expect(reqs[1].body).toEqual({ permission: 'read' })
+    expect(reqs[2]).toMatchObject({ method: 'DELETE', url: 'http://fj/api/v1/repos/office/web/collaborators/alice' })
+  })
+
+  it('removeCollaborator treats a missing repo or user as done, but not other errors', async () => {
+    capture(() => jsonResponse({ message: 'not found' }, 404))
+    await expect(new ForgejoClient('http://fj', 'tok').removeCollaborator('office', 'gone', 'alice')).resolves.toBeUndefined()
+    capture(() => jsonResponse({ message: 'boom' }, 500))
+    await expect(new ForgejoClient('http://fj', 'tok').removeCollaborator('office', 'web', 'alice')).rejects.toThrow(/500/)
+  })
+
+  it('blocks a login and resets a password with a forced change', async () => {
+    const reqs = capture(() => jsonResponse({}))
+    const fj = new ForgejoClient('http://fj', 'tok')
+    await fj.setProhibitLogin('alice', true)
+    await fj.adminResetPassword('alice', 'pw', true)
+    await fj.adminResetPassword('ada', 'pw2')
+    expect(reqs[0]).toEqual({ method: 'PATCH', url: 'http://fj/api/v1/admin/users/alice', body: { prohibit_login: true, login_name: 'alice', source_id: 0 } })
+    expect(reqs[1].body).toEqual({ password: 'pw', must_change_password: true, login_name: 'alice', source_id: 0 })
+    expect(reqs[2].body).toEqual({ password: 'pw2', must_change_password: false, login_name: 'ada', source_id: 0 })
+  })
+
+  it('issueAuthor returns the poster login, or undefined when the issue cannot be read', async () => {
+    capture(() => jsonResponse({ number: 7, user: { login: 'alice' } }))
+    expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 7)).toBe('alice')
+    capture(() => jsonResponse({ message: 'nope' }, 404))
+    expect(await new ForgejoClient('http://fj', 'tok').issueAuthor('office', 'web', 8)).toBeUndefined()
+  })
+})
+
+describe('ensureForgejoPrivacy', () => {
+  function fakeFj(org: { visibility: string } | undefined, repos: { name: string; private: boolean }[]) {
+    const calls: string[] = []
+    const fj: PrivacyClient = {
+      getOrg: async () => org,
+      setOrgVisibility: async (o, v) => { calls.push(`org ${o} ${v}`) },
+      listOrgRepos: async () => repos,
+      setRepoPrivate: async (o, r) => { calls.push(`repo ${o}/${r}`) },
+    }
+    return { fj, calls }
+  }
+
+  it('makes public repos and a public org private', async () => {
+    const f = fakeFj({ visibility: 'public' }, [{ name: 'tasks', private: false }, { name: 'web', private: true }, { name: 'api', private: false }])
+    expect(await ensureForgejoPrivacy(f.fj, 'office')).toEqual({ org: true, repos: ['tasks', 'api'] })
+    expect(f.calls).toEqual(['repo office/tasks', 'repo office/api', 'org office private'])
+  })
+
+  it('changes nothing when everything is private already', async () => {
+    const f = fakeFj({ visibility: 'private' }, [{ name: 'tasks', private: true }])
+    expect(await ensureForgejoPrivacy(f.fj, 'office')).toEqual({ org: false, repos: [] })
+    expect(f.calls).toEqual([])
+  })
+
+  it('does nothing when the org does not exist yet', async () => {
+    const f = fakeFj(undefined, [])
+    expect(await ensureForgejoPrivacy(f.fj, 'office')).toEqual({ org: false, repos: [] })
+    expect(f.calls).toEqual([])
   })
 })
