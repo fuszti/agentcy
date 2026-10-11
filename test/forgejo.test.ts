@@ -153,10 +153,18 @@ describe('ForgejoClient privacy and collaborators', () => {
     expect(await new ForgejoClient('http://fj', 'tok').getOrg('office')).toMatchObject({ visibility: 'public' })
   })
 
+  it('listOrgRepos keeps reading after a short page and stops only on an empty one', async () => {
+    const reqs = capture((r) => jsonResponse(r.url.includes('page=1') ? [{ name: 'a', private: true }] : r.url.includes('page=2') ? [{ name: 'b', private: true }] : []))
+    const repos = await new ForgejoClient('http://fj', 'tok').listOrgRepos('office')
+    expect(repos.map(r => r.name)).toEqual(['a', 'b'])
+    expect(reqs).toHaveLength(3)
+  })
+
   it('listOrgRepos reads every page', async () => {
     const page1 = Array.from({ length: 50 }, (_, i) => ({ name: `r${String(i)}`, private: false, extra: true }))
     const reqs = capture((r) => jsonResponse(r.url.includes('page=1') ? page1 : r.url.includes('page=2') ? [{ name: 'last', private: true }] : []))
     const repos = await new ForgejoClient('http://fj', 'tok').listOrgRepos('office')
+    expect(reqs.map(r => r.url.match(/page=(\d+)/)?.[1])).toEqual(['1', '2', '3'])
     expect(repos).toHaveLength(51)
     expect(repos[0]).toEqual({ name: 'r0', private: false })
     expect(repos[50]).toEqual({ name: 'last', private: true })

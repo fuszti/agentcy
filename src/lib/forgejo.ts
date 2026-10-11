@@ -318,8 +318,9 @@ export class ForgejoClient {
     const out: { name: string; private: boolean }[] = []
     for (let page = 1; ; page++) {
       const batch = await this.request<{ name: string; private: boolean }[]>('GET', `/orgs/${encodeURIComponent(org)}/repos?limit=50&page=${String(page)}`)
+      // Stop only on an empty page: a server may cap `limit` below 50 and return short pages.
+      if (!batch.length) return out
       out.push(...batch.map(r => ({ name: r.name, private: r.private })))
-      if (batch.length < 50) return out
     }
   }
 
