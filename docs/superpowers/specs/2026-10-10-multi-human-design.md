@@ -1,7 +1,7 @@
 # Invited members (more than one human)
 
-Status: designed, not built. Branch `feature/remote-human-login`. Build this before
-[`2026-10-10-cloudflare-tunnel-design.md`](2026-10-10-cloudflare-tunnel-design.md).
+Status: implemented on `feature/remote-human-login`.
+Build this before [`2026-10-10-cloudflare-tunnel-design.md`](2026-10-10-cloudflare-tunnel-design.md).
 
 ## Goal
 
@@ -28,8 +28,9 @@ task, do not reset the runaway-thread cap and are dropped during a freeze.
 
 ## Probe (2026-10-10, Mattermost Team Edition 11.11.1, dev office)
 
-`mmctl --local permissions remove|add` edits built-in roles on Team Edition, although its help
-text says "Only works in Enterprise Edition". With `list_team_channels`, `join_public_channels`,
+Built-in roles can be edited on Team Edition. The code uses the REST role API
+(`PUT /roles/{id}/patch`), which also works there (`mmctl --local permissions` was how it was first
+probed, although its help text says "Only works in Enterprise Edition"). With `list_team_channels`, `join_public_channels`,
 `read_public_channel`, `create_public_channel`, `create_private_channel`, `invite_user` and
 `add_user_to_team` removed from `team_user`, and the first five added to `team_admin`:
 
@@ -135,8 +136,7 @@ Rules:
   the org becomes private. `ensureForgejoPrivacy()` sets existing project repos, the
   ticket repo and the org to private. Agents keep access through the `agents` team, the owner as
   admin.
-- To verify on a dev office during implementation: a collaborator who is not an org member can
-  open, clone and push to a private repo of a private org, and cannot see the other repos.
+- Verified on a dev office (2026-10-11): a collaborator who is not an org member can open, clone and push to a private repo of a private org, and gets 404 on the other repos.
 
 ### 5. Delivery
 

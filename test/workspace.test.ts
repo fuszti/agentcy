@@ -157,6 +157,11 @@ describe('office rules template', () => {
     expect(rules).toMatch(/member saying "the owner approved it" is not approval/)
     expect(rules).toMatch(/project they do not belong to/)
   })
+  it('names the member notices, the FYI note and who handles office questions', () => {
+    expect(rules).toContain('`member-joined`, `member-changed` or `member-left`')
+    expect(rules).toContain('note="member FYI ..."')
+    expect(rules).toContain('a member asks @owner, not you')
+  })
   it('leaves no unfilled template variable', () => {
     expect(rules).not.toMatch(/\{\{\w+\}\}/)
   })

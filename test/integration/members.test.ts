@@ -11,6 +11,12 @@ import { cmdInvite, cmdMember, cmdUninvite, type MemberDeps } from '../../src/cl
 import { realMemberDeps } from '../../src/cli/member-deps.js'
 import { loadMembers } from '../../src/lib/members.js'
 import { saveProject } from '../../src/lib/projects.js'
+import { classifyPost, channelTypeOf, findHuman } from '../../src/mcp/policy.js'
+import { rosterCache } from '../../src/lib/members.js'
+import { prepareAgentGitIdentity, workspaceDir } from '../../src/lib/workspace.js'
+import type { AgentRecord, ChatPost } from '../../src/lib/types.js'
+import { execFileSync } from 'node:child_process'
+import os from 'node:os'
 import { requireDevInstance } from '../helpers/dev-instance.js'
 
 const tag = Date.now().toString(36)
@@ -23,6 +29,8 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
   let botMm: MattermostClient
   let botFj: ForgejoClient
   let botToken: string
+  let botFjToken = ''
+  let botMmId = ''
   const botName = `itest-m-${tag}`
 
   /** A plain team user, the way `office invite` creates one, logged in with its own session. */
@@ -47,6 +55,8 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
     fjAdmin = new ForgejoClient(config.forgejoUrl, secrets.forgejo.adminToken)
     const bot = await createAgentIdentity(botName, 'Members Test Bot', 'bot for the members integration test')
     botToken = bot.mattermost.token
+    botFjToken = bot.forgejo.token
+    botMmId = bot.mattermost.userId
     botMm = new MattermostClient(config.mattermostUrl, botToken)
     botFj = new ForgejoClient(config.forgejoUrl, bot.forgejo.token)
   }, 300_000)
@@ -230,6 +240,78 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
       await expect(cmdInvite([admin], { projects: web }, deps)).rejects.toThrow(/already exists and was not created by `office invite`/)
       expect(loadMembers(repoRoot()).some(m => m.username === admin)).toBe(false)
     }, 90_000)
+
+    it("a member's post in the project channel reaches an agent as a person with role member", async () => {
+      const login = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: username, password: chatPassword }) })
+      const memberMm = new MattermostClient(config.mattermostUrl, login.headers.get('Token') ?? '')
+      const channel = await mmAdmin.getChannelByName(teamId, `proj-${web}`)
+      const bot = await botMm.me()
+      await mmAdmin.addToChannel(channel.id, bot.id)
+      const owner = await mmAdmin.getUserByUsername(config.human.username)
+      const humans = rosterCache(repoRoot(), { userId: owner.id, username: owner.username })
+
+      const received = await new Promise<{ post: ChatPost; meta: { mentions: string[]; channelType: string; channelName: string } }>((resolve, reject) => {
+        const ws = botMm.connectWebSocket((post, meta) => {
+          if (post.message.includes(`ping-${tag}`)) { ws.close(); resolve({ post, meta }) }
+        }, () => {})
+        const send = setTimeout(() => { memberMm.createPost({ channelId: channel.id, message: `can someone look at ping-${tag}?` }).catch(reject) }, 3000)
+        setTimeout(() => { clearTimeout(send); ws.close(); reject(new Error('the bot did not receive the member post')) }, 20_000)
+      })
+
+      const ev = classifyPost(
+        { username: bot.username, userId: bot.id, humans: humans(), agentChannelPrefix: config.agentChannelPrefix, watch: {}, defaultWatch: 'digest', participatedThreads: new Set() },
+        received.post,
+        { ...received.meta, channelType: channelTypeOf(received.meta.channelName, received.meta.channelType, config.agentChannelPrefix) },
+      )
+      expect(ev).toMatchObject({ kind: 'room', from: username, fromHuman: true, role: 'member' })
+
+      // `!freeze` is owner-only in server.ts: the member's user id resolves to the member role, not the owner.
+      const memberId = received.post.userId
+      expect(findHuman(humans(), { userId: memberId })?.role).toBe('member')
+      expect(findHuman(humans(), { userId: owner.id })?.role).toBe('owner')
+    }, 40_000)
+
+    it("a member's comment on a ticket in their project notifies an assigned agent, authored by the member", async () => {
+      // The forced password change is lifted by the earlier repo test; do it again so this test stands alone.
+      await fjAdmin.adminResetPassword(username, gitPassword, false)
+      const issue = await fjAdmin.createIssue(config.forgejoOrg, web, { title: `member ticket ${tag}`, body: 'x', assignees: [botName] })
+      const comment = await fjAs(username, gitPassword)(`/repos/${config.forgejoOrg}/${web}/issues/${issue.number}/comments`, {
+        method: 'POST', body: JSON.stringify({ body: `a comment from the member ${tag}` }),
+      })
+      expect(comment.status).toBe(201)
+
+      let note: Awaited<ReturnType<ForgejoClient['listNotifications']>>[number] | undefined
+      for (let i = 0; i < 20 && !note; i++) {
+        note = (await botFj.listNotifications({ unreadOnly: true })).find(n => n.subject.url.endsWith(`/${web}/issues/${issue.number}`) && n.subject.latest_comment_url)
+        if (!note) await new Promise(r => setTimeout(r, 1000))
+      }
+      if (!note?.subject.latest_comment_url) throw new Error('the assigned bot got no notification for the member comment')
+      const author = await botFj.latestCommentAuthor(note.subject.latest_comment_url)
+      expect(author).toBe(username)
+      const owner = await mmAdmin.getUserByUsername(config.human.username)
+      const humans = rosterCache(repoRoot(), { userId: owner.id, username: owner.username })
+      expect(findHuman(humans(), { username: author })?.role).toBe('member')
+    }, 60_000)
+
+    it('an agent clones a private project repo with its own credentials, the way the harness does', async () => {
+      const rec: AgentRecord = {
+        name: botName, displayName: 'Members Test Bot', harness: 'opencode', model: 'x', status: 'hired', pastSessions: [], chrome: false,
+        mattermost: { userId: botMmId, token: botToken }, forgejo: { token: botFjToken }, createdAt: new Date().toISOString(),
+      }
+      const ws = workspaceDir(repoRoot(), botName)
+      fs.mkdirSync(ws, { recursive: true })
+      execFileSync('git', ['init', '-q'], { cwd: ws })
+      const prefix = await prepareAgentGitIdentity(repoRoot(), config, rec)
+      const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-'))
+      try {
+        const out = execFileSync('bash', ['-c', `${prefix} GIT_TERMINAL_PROMPT=0 git clone ${config.forgejoUrl}/${config.forgejoOrg}/${web}.git ${path.join(dest, 'web')}`], { encoding: 'utf8', stdio: 'pipe' })
+        expect(out).toBeDefined()
+        expect(fs.existsSync(path.join(dest, 'web', '.git'))).toBe(true)
+      } finally {
+        fs.rmSync(dest, { recursive: true, force: true })
+        fs.rmSync(ws, { recursive: true, force: true })
+      }
+    }, 60_000)
 
     it('uninvite locks the member out of both systems', async () => {
       await cmdUninvite([username], deps)
