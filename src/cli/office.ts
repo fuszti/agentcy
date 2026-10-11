@@ -20,6 +20,8 @@ import { MOVED_PROMPT, exportOffice, importOffice } from '../lib/migrate.js'
 import { cmdVault } from './vault-cmd.js'
 import { runSetup } from './setup.js'
 import { cmdDev, type DevDeps } from './dev-cmd.js'
+import { cmdInvite, cmdMember, cmdUninvite } from './member-cmd.js'
+import { realMemberDeps } from './member-deps.js'
 import { opencodeProviderOverrides, vaultEnvDefaults, vaultEnvForAgent, withEnvFile, writeAgentEnvFile } from '../lib/vault.js'
 import { findClaudeSessionFile, readClaudeTranscript, renderTranscript } from '../lib/transcript.js'
 import { capturePane, killWindow, openWindow, paneAlive, windowExists, windowTarget } from '../lib/tmux.js'
@@ -828,6 +830,9 @@ async function main() {
       break
     }
     case 'retire': { const a = await agent(slug(pos[0] ?? '')); await stopAgent(a); await retireAgentIdentity(a.name); a.status = 'retired'; await saveAgent(a); console.log(`@${a.name} retired`); break }
+    case 'invite': assertInitialised(root, 'invite'); await cmdInvite(pos, flags, await realMemberDeps(root, cfg)); break
+    case 'member': assertInitialised(root, 'member'); await cmdMember(pos, flags, await realMemberDeps(root, cfg)); break
+    case 'uninvite': assertInitialised(root, 'uninvite'); await cmdUninvite(pos, await realMemberDeps(root, cfg)); break
     case 'freeze': fs.writeFileSync(path.join(stateDir(), 'freeze'), new Date().toISOString()); console.log('office frozen: only human messages are delivered, agent posts refused'); break
     case 'unfreeze': fs.rmSync(path.join(stateDir(), 'freeze'), { force: true }); console.log('office unfrozen'); break
     case 'say': await cmdSay(pos, flags); break
@@ -868,6 +873,11 @@ async function main() {
   shift <agent>                memory write-back, then fresh session
   model <agent> <model>        switch the agent's model (e.g. sonnet, opus, opencode-go/deepseek-v4-pro) and restart it in the same session
   retire <agent>               stop and deactivate
+  invite <username> --projects a,b [--channels x,y] [--name "Display Name"] [--email e]
+                               invite a person: chat and tickets accounts, limited to those projects and channels
+  member [list | grant <username> --projects a [--channels x] | revoke <username> --projects a [--channels x] | reset-password <username>]
+                               invited members and what they can see
+  uninvite <username>          deactivate a member's accounts and remove their access
   freeze | unfreeze            stop agent chatter (only the owner's messages get through)
   say <text> [--channel c] [--thread id]    post as the owner (testing)
   prompt <agent> <text>        queue a raw prompt for an agent

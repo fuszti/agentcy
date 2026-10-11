@@ -4,6 +4,13 @@ import { loadConfig, loadSecrets } from '../../src/lib/config.js'
 import { MEMBER_DENIED, chatRolesReady } from '../../src/lib/chat-roles.js'
 import { MattermostClient } from '../../src/lib/mattermost.js'
 import { ForgejoClient } from '../../src/lib/forgejo.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { repoRoot } from '../../src/lib/config.js'
+import { cmdInvite, cmdMember, cmdUninvite, type MemberDeps } from '../../src/cli/member-cmd.js'
+import { realMemberDeps } from '../../src/cli/member-deps.js'
+import { loadMembers } from '../../src/lib/members.js'
+import { saveProject } from '../../src/lib/projects.js'
 import { requireDevInstance } from '../helpers/dev-instance.js'
 
 const tag = Date.now().toString(36)
@@ -121,4 +128,89 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
     // The bot still works after the round trip.
     expect((await botMm.getPublicChannels(teamId)).length).toBeGreaterThan(0)
   }, 60_000)
+  describe('office invite end to end', () => {
+    const username = `inv-${tag}`.slice(0, 22)
+    const web = `web-${tag}`
+    const api = `api-${tag}`
+    let deps: MemberDeps
+    const printed: string[] = []
+    let chatPassword = ''
+    let gitPassword = ''
+    const passwordAfter = (label: string) => new RegExp(`${label}:\\s+\\S+ / (\\S+)`).exec(printed.join('\n'))?.[1] ?? ''
+    const fjAs = (user: string, password: string) => (p: string, init: RequestInit = {}) =>
+      fetch(`${config.forgejoUrl}/api/v1${p}`, { ...init, headers: { Authorization: `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`, 'Content-Type': 'application/json' } })
+
+    beforeAll(async () => {
+      for (const name of [web, api]) {
+        await fjAdmin.createOrgRepo(config.forgejoOrg, name, { autoInit: true })
+        const ch = await mmAdmin.createChannel({ teamId, name: `proj-${name}`, displayName: `proj-${name}`, purpose: 'itest', type: 'O' })
+        await mmAdmin.createPost({ channelId: ch.id, message: `welcome to ${name}` })
+        await saveProject(repoRoot(), { name, description: 'itest', repo: `${config.forgejoOrg}/${name}`, channel: `proj-${name}`, members: [], createdAt: new Date().toISOString() })
+      }
+      deps = { ...(await realMemberDeps(repoRoot(), config)), log: (l) => printed.push(l) }
+    }, 120_000)
+
+    afterAll(() => {
+      for (const name of [web, api]) fs.rmSync(path.join(repoRoot(), 'state', 'projects', `${name}.json`), { force: true })
+    })
+
+    it('invites a member onto one project', async () => {
+      await cmdInvite([username], { projects: web, name: 'Integration Member' }, deps)
+      chatPassword = passwordAfter('chat')
+      gitPassword = passwordAfter('tickets')
+      expect(chatPassword).not.toBe('')
+      expect(gitPassword).not.toBe('')
+      expect(loadMembers(repoRoot()).find(m => m.username === username)).toMatchObject({ projects: [web], removedAt: null })
+    }, 60_000)
+
+    it('the member reads their project channel and nothing else', async () => {
+      const res = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: username, password: chatPassword }) })
+      expect(res.status).toBe(200)
+      const mm = new MattermostClient(config.mattermostUrl, res.headers.get('Token') ?? '')
+      const mine = (await mm.getChannelsForUser(teamId)).map(c => c.name)
+      expect(mine).toContain(`proj-${web}`)
+      expect(mine).not.toContain(`proj-${api}`)
+      expect(mine).not.toContain(config.adminChannel)
+      await expect(mm.getChannelByName(teamId, `proj-${api}`)).rejects.toThrow(/403/)
+      await expect(mm.getChannelByName(teamId, 'office')).rejects.toThrow(/403/)
+    }, 30_000)
+
+    it('the member reaches only their project repo', async () => {
+      // The invite forces a password change at first login, which blocks the API; lift it to test access.
+      await fjAdmin.adminResetPassword(username, gitPassword, false)
+      const fj = fjAs(username, gitPassword)
+      expect((await fj(`/repos/${config.forgejoOrg}/${web}`)).status).toBe(200)
+      expect((await fj(`/repos/${config.forgejoOrg}/${api}`)).status).toBe(404)
+      expect((await fj(`/repos/${config.forgejoOrg}/${config.ticketsRepo}`)).status).toBe(404)
+      const issue = await fj(`/repos/${config.forgejoOrg}/${web}/issues`, { method: 'POST', body: JSON.stringify({ title: 'from the member', body: 'x' }) })
+      expect(issue.status).toBe(201)
+      const push = await fj(`/repos/${config.forgejoOrg}/${web}/contents/member.txt`, {
+        method: 'POST', body: JSON.stringify({ content: Buffer.from('hi').toString('base64'), message: 'member commit', new_branch: 'member-branch' }),
+      })
+      expect(push.status).toBe(201)
+    }, 30_000)
+
+    it('grant and revoke change what the member reaches', async () => {
+      const fj = fjAs(username, gitPassword)
+      await cmdMember(['grant', username], { projects: api }, deps)
+      expect((await fj(`/repos/${config.forgejoOrg}/${api}`)).status).toBe(200)
+      await cmdMember(['revoke', username], { projects: api }, deps)
+      expect((await fj(`/repos/${config.forgejoOrg}/${api}`)).status).toBe(404)
+    }, 60_000)
+
+    it('the invite queued a signed notice for the hired agent', () => {
+      const inbox = path.join(repoRoot(), 'state', 'agents', botName, 'inbox')
+      const files = fs.readdirSync(inbox).filter(f => f.includes('member-joined'))
+      expect(files.length).toBe(1)
+      expect(fs.readFileSync(path.join(inbox, files[0]), 'utf8')).toContain(`@${username} (Integration Member) joined the office`)
+    })
+
+    it('uninvite locks the member out of both systems', async () => {
+      await cmdUninvite([username], deps)
+      const res = await fetch(`${config.mattermostUrl}/api/v4/users/login`, { method: 'POST', body: JSON.stringify({ login_id: username, password: chatPassword }) })
+      expect(res.status).toBe(401)
+      expect((await fjAs(username, gitPassword)('/user')).status).toBe(401)
+      expect(loadMembers(repoRoot()).find(m => m.username === username)?.removedAt).not.toBeNull()
+    }, 60_000)
+  })
 })
