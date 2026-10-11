@@ -189,6 +189,36 @@ export interface AgentStatus {
   detail?: string
 }
 
+// ---------------------------------------------------------------- humans
+
+/** The owner approves and administers; a member is an invited collaborator. */
+export type HumanRole = 'owner' | 'member'
+
+/** One person as the delivery policy sees them. Matched by Mattermost user id. */
+export interface Human {
+  userId: string
+  username: string
+  role: HumanRole
+  /** Projects a member was invited to. Unset for the owner. */
+  projects?: string[]
+}
+
+/** One invited member: an entry of state/members.json (no secrets). */
+export interface MemberRecord {
+  /** Same name on Mattermost and Forgejo. Never reused, also after removal. */
+  username: string
+  displayName: string
+  role: 'member'
+  mattermostUserId: string
+  forgejoUsername: string
+  projects: string[]
+  /** Extra channels besides the project channels. */
+  channels: string[]
+  invitedAt: string
+  /** ISO time of `office uninvite`, else null. */
+  removedAt: string | null
+}
+
 // ---------------------------------------------------------------- inbound events
 
 export type EventKind =
