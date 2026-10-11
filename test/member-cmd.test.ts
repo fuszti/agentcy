@@ -23,12 +23,12 @@ function harness(opts: { rolesReady?: boolean; failOn?: string } = {}) {
   const projects = [proj('web'), proj('api'), proj('old', { archived: true })]
   const channels = new Set(['office', 'design', 'proj-web', 'proj-api', 'proj-old', 'office-admin', 'office-finance', 'ag-lobby'])
   const rec = (line: string) => {
-    if (state.failOn && line.startsWith(state.failOn)) throw new Error(`simulated failure: ${line}`)
+    if (state.failOn && line.startsWith(state.failOn)) throw new Error(`simulated failure: ${state.failOn}`)
     calls.push(line)
   }
   const deps: MemberDeps = {
     root,
-    cfg: { human: { username: 'owner', displayName: 'Owner' }, adminChannel: 'office-admin', financeChannel: 'office-finance', agentChannelPrefix: 'ag-', systemUsernames: ['office'] },
+    cfg: { human: { username: 'owner', displayName: 'Owner' }, forgejoOrg: 'office', ticketsRepo: 'tasks', adminChannel: 'office-admin', financeChannel: 'office-finance', agentChannelPrefix: 'ag-', systemUsernames: ['office'] },
     now: () => '2026-10-11T10:00:00.000Z',
     randomPassword: () => `pw${String(++state.pw)}`,
     log: (l) => out.push(l),
@@ -168,10 +168,13 @@ describe('office invite', () => {
 
   it('leaves the roster untouched when it fails half way, and a re-run completes it', async () => {
     const h = harness({ failOn: 'git.ensureUser' })
-    await expect(cmdInvite(['alice'], { projects: 'web' }, h.deps)).rejects.toThrow(/simulated failure/)
+    const msg = await cmdInvite(['alice'], { projects: 'web' }, h.deps).then(() => '', (e: Error) => e.message)
+    expect(msg).toMatch(/simulated failure/)
     expect(fs.existsSync(membersFile(h.root))).toBe(false)
     expect(h.notices).toEqual([])
     expect(h.out.join('\n')).not.toMatch(/pw\d/)
+    expect(msg).toMatch(/Done so far: chat account alice, team membership, #proj-web/)
+    expect(msg).not.toMatch(/pw\d/)
 
     h.state.failOn = undefined
     h.calls.length = 0
@@ -179,6 +182,33 @@ describe('office invite', () => {
     expect(h.calls).toContain('git.addCollaborator office/web alice')
     expect(loadMembers(h.root)).toHaveLength(1)
     expect(h.notices).toHaveLength(2)
+  })
+
+  for (const repo of ['office/tasks', 'Office/Tasks']) {
+    it(`refuses a project whose repo is the ticket repo (${repo})`, async () => {
+      const h = harness()
+      h.projects.push(proj('tasks', { repo }))
+      await expect(cmdInvite(['alice'], { projects: 'tasks' }, h.deps)).rejects.toThrow(/never shared with a member/)
+      expect(h.calls).toEqual([])
+      expect(h.notices).toEqual([])
+      expect(fs.existsSync(membersFile(h.root))).toBe(false)
+      await invited(h)
+      const before = fs.readFileSync(membersFile(h.root), 'utf8')
+      await expect(cmdMember(['grant', 'alice'], { projects: 'tasks' }, h.deps)).rejects.toThrow(/never shared with a member/)
+      expect(h.calls).toEqual([])
+      expect(h.notices).toEqual([])
+      expect(fs.readFileSync(membersFile(h.root), 'utf8')).toBe(before)
+    })
+  }
+
+  it('prints the passwords and only warns when the agent list cannot be read', async () => {
+    const h = harness()
+    h.deps.hiredAgents = async () => { throw new Error('registry gone') }
+    await cmdInvite(['alice'], { projects: 'web' }, h.deps)
+    expect(loadMembers(h.root)).toHaveLength(1)
+    expect(h.out.join('\n')).toMatch(/pw1/)
+    expect(h.out.join('\n')).toMatch(/pw2/)
+    expect(h.out.join('\n')).toMatch(/warning: could not list the agents/)
   })
 
   it('still finishes when one agent cannot be notified', async () => {

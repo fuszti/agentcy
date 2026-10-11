@@ -9,7 +9,7 @@ import { loadMembers, saveMembers, validateChannels, validateDisplayName, valida
 
 export interface MemberDeps {
   root: string
-  cfg: Pick<OfficeConfig, 'human' | 'adminChannel' | 'financeChannel' | 'agentChannelPrefix' | 'systemUsernames'>
+  cfg: Pick<OfficeConfig, 'human' | 'forgejoOrg' | 'ticketsRepo' | 'adminChannel' | 'financeChannel' | 'agentChannelPrefix' | 'systemUsernames'>
   now(): string
   randomPassword(): string
   log(line: string): void
@@ -70,9 +70,25 @@ export function memberNotice(kind: 'joined' | 'changed' | 'left', m: Pick<Member
   }
 }
 
+/** Runs a multi-step change; on failure says which steps were already done (never a password). */
+async function withSteps(steps: string[], fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+  } catch (e) {
+    throw new Error(`${(e as Error).message}. Done so far: ${steps.length ? steps.join(', ') : 'nothing'}. Nothing was recorded; run the same command again to finish.`)
+  }
+}
+
 async function notifyAgents(deps: MemberDeps, kind: 'joined' | 'changed' | 'left', m: MemberRecord): Promise<void> {
   const notice = memberNotice(kind, m, deps.cfg.human.username)
-  for (const agent of await deps.hiredAgents()) {
+  let agents: string[]
+  try {
+    agents = await deps.hiredAgents()
+  } catch (e) {
+    deps.log(`warning: could not list the agents to notify: ${(e as Error).message}`)
+    return
+  }
+  for (const agent of agents) {
     try {
       await deps.notify(agent, `member-${kind}`, notice)
     } catch (e) {
@@ -90,6 +106,10 @@ async function resolveGrants(deps: MemberDeps, projectNames: string[], channelNa
     if (p.archived) throw new Error(`project ${n} is archived`)
     return p
   })
+  const ticketRepo = `${deps.cfg.forgejoOrg}/${deps.cfg.ticketsRepo}`.toLowerCase()
+  for (const p of projects) {
+    if (p.repo.toLowerCase() === ticketRepo) throw new Error(`project ${p.name} uses the ticket repo ${deps.cfg.forgejoOrg}/${deps.cfg.ticketsRepo}, which is never shared with a member`)
+  }
   const refusal = validateChannels(channelNames, deps.cfg)
   if (refusal) throw new Error(refusal)
   for (const c of channelNames) if (!(await deps.chat.channelExists(c))) throw new Error(`channel #${c} not found`)
@@ -133,23 +153,30 @@ export async function cmdInvite(pos: string[], flags: Flags, deps: MemberDeps): 
 
   const chatPassword = deps.randomPassword()
   const gitPassword = deps.randomPassword()
-  const userId = await deps.chat.ensureUser({ username, email, password: chatPassword })
-  await deps.chat.addToTeam(userId)
-  const record: MemberRecord = {
-    username, displayName, role: 'member', mattermostUserId: userId, forgejoUsername: username,
-    projects: grants.projects.map(p => p.name), channels: grants.channels, invitedAt: deps.now(), removedAt: null,
-  }
-  for (const c of channelsOf(record, grants.projects)) await deps.chat.addToChannel(c, userId)
-  await deps.git.ensureUser({ username, email, password: gitPassword })
-  for (const p of grants.projects) await deps.git.addCollaborator(p.repo, username)
-  saveMembers(deps.root, [...members, record])
-  await notifyAgents(deps, 'joined', record)
+  const done: string[] = []
+  let record!: MemberRecord
+  await withSteps(done, async () => {
+    const userId = await deps.chat.ensureUser({ username, email, password: chatPassword })
+    done.push(`chat account ${username}`)
+    await deps.chat.addToTeam(userId)
+    done.push('team membership')
+    record = {
+      username, displayName, role: 'member', mattermostUserId: userId, forgejoUsername: username,
+      projects: grants.projects.map(p => p.name), channels: grants.channels, invitedAt: deps.now(), removedAt: null,
+    }
+    for (const c of channelsOf(record, grants.projects)) { await deps.chat.addToChannel(c, userId); done.push(`#${c}`) }
+    await deps.git.ensureUser({ username, email, password: gitPassword })
+    done.push(`tickets account ${username}`)
+    for (const p of grants.projects) { await deps.git.addCollaborator(p.repo, username); done.push(`collaborator ${p.repo}`) }
+    saveMembers(deps.root, [...members, record])
+  })
 
   deps.log(`@${username} invited. Projects: ${orNone(record.projects)}. Extra channels: ${orNone(record.channels)}.`)
   deps.log('One-time passwords (shown once, not stored). Pass them on over a private channel:')
   deps.log(`  chat:    ${username} / ${chatPassword}`)
   deps.log(`  tickets: ${username} / ${gitPassword}  (must be changed at first login)`)
   deps.log('Ask them to change the chat password after the first login.')
+  await notifyAgents(deps, 'joined', record)
 }
 
 async function grant(pos: string[], flags: Flags, deps: MemberDeps): Promise<void> {
@@ -162,9 +189,12 @@ async function grant(pos: string[], flags: Flags, deps: MemberDeps): Promise<voi
   const projects = await deps.projects()
   const next: MemberRecord = { ...m, projects: uniq([...m.projects, ...projectNames]), channels: uniq([...m.channels, ...grants.channels]) }
   const had = channelsOf(m, projects)
-  for (const c of channelsOf(next, projects)) if (!had.includes(c)) await deps.chat.addToChannel(c, m.mattermostUserId)
-  for (const p of grants.projects) if (!m.projects.includes(p.name)) await deps.git.addCollaborator(p.repo, m.forgejoUsername)
-  saveMembers(deps.root, replace(all, next))
+  const done: string[] = []
+  await withSteps(done, async () => {
+    for (const c of channelsOf(next, projects)) if (!had.includes(c)) { await deps.chat.addToChannel(c, m.mattermostUserId); done.push(`#${c}`) }
+    for (const p of grants.projects) if (!m.projects.includes(p.name)) { await deps.git.addCollaborator(p.repo, m.forgejoUsername); done.push(`collaborator ${p.repo}`) }
+    saveMembers(deps.root, replace(all, next))
+  })
   await notifyAgents(deps, 'changed', next)
   deps.log(`@${m.username}: projects ${orNone(next.projects)}; extra channels ${orNone(next.channels)}`)
 }
@@ -180,12 +210,15 @@ async function revoke(pos: string[], flags: Flags, deps: MemberDeps): Promise<vo
   const projects = await deps.projects()
   const next: MemberRecord = { ...m, projects: m.projects.filter(n => !projectNames.includes(n)), channels: m.channels.filter(c => !channelNames.includes(c)) }
   const keeps = channelsOf(next, projects)
-  for (const c of channelsOf(m, projects)) if (!keeps.includes(c)) await deps.chat.removeFromChannel(c, m.mattermostUserId)
-  for (const n of projectNames) {
-    const p = projects.find(x => x.name === n)
-    if (p) await deps.git.removeCollaborator(p.repo, m.forgejoUsername)
-  }
-  saveMembers(deps.root, replace(all, next))
+  const done: string[] = []
+  await withSteps(done, async () => {
+    for (const c of channelsOf(m, projects)) if (!keeps.includes(c)) { await deps.chat.removeFromChannel(c, m.mattermostUserId); done.push(`removed from #${c}`) }
+    for (const n of projectNames) {
+      const p = projects.find(x => x.name === n)
+      if (p) { await deps.git.removeCollaborator(p.repo, m.forgejoUsername); done.push(`removed collaborator ${p.repo}`) }
+    }
+    saveMembers(deps.root, replace(all, next))
+  })
   await notifyAgents(deps, 'changed', next)
   deps.log(`@${m.username}: projects ${orNone(next.projects)}; extra channels ${orNone(next.channels)}`)
 }
