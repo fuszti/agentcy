@@ -607,34 +607,47 @@ describe('findHuman', () => {
 
 describe('ticketCause', () => {
   const note = { updated_at: '2026-10-11T10:00:30Z' }
-  const comment = (createdAt: string) => ({ login: 'alice', id: 41, createdAt })
-  const issue = (createdAt: string, updatedAt: string) => ({ login: 'owner', id: 1, createdAt, updatedAt })
-  it('uses the latest comment when it is the issue\'s latest change and near the notification', () => {
-    expect(ticketCause(note, comment('2026-10-11T10:00:00Z'), issue('2026-10-10T08:00:00Z', '2026-10-11T10:00:01Z'))).toEqual({ login: 'alice', id: 41 })
+  const owner = (createdAt: string) => ({ login: 'owner', id: 1, createdAt })
+  const alice = (createdAt: string) => ({ login: 'alice', id: 41, createdAt })
+  const oldIssue = owner('2026-10-10T08:00:00Z')
+  it('credits the last action before the notification to whoever did it', () => {
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:00Z')])).toEqual({ login: 'alice', id: 41 })
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T09:59:40Z'), owner('2026-10-11T10:00:30Z')])).toEqual({ login: 'owner', id: 1 })
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:00Z'), alice('2026-10-11T10:00:01Z')])).toEqual({ login: 'alice', id: 41 })
   })
-  it('ignores a recent comment when something changed the issue after it (an assignment or label)', () => {
-    expect(ticketCause(note, comment('2026-10-11T10:00:00Z'), issue('2026-10-10T08:00:00Z', '2026-10-11T10:00:20Z'))).toBeUndefined()
+  it('credits the issue author when nothing happened on a new issue', () => {
+    expect(ticketCause(note, owner('2026-10-11T10:00:10Z'), [])).toEqual({ login: 'owner', id: 1 })
   })
-  it('uses the issue author only when nothing touched the issue after it was created', () => {
-    expect(ticketCause(note, undefined, issue('2026-10-11T10:00:10Z', '2026-10-11T10:00:10Z'))).toEqual({ login: 'owner', id: 1 })
-    expect(ticketCause(note, comment('2026-10-11T09:00:00Z'), issue('2026-10-11T10:00:10Z', '2026-10-11T10:00:11Z'))).toEqual({ login: 'owner', id: 1 })
+  it('credits nobody when someone else changed the issue a second after it was opened', () => {
+    expect(ticketCause({ updated_at: '2026-10-11T10:00:00Z' }, owner('2026-10-11T10:00:00Z'), [alice('2026-10-11T10:00:01Z')])).toBeUndefined()
+    expect(ticketCause({ updated_at: '2026-10-11T10:00:01Z' }, owner('2026-10-11T10:00:00Z'), [alice('2026-10-11T10:00:01Z')])).toBeUndefined()
   })
-  it('does not credit the issue author for a change someone else made soon after creation', () => {
-    expect(ticketCause(note, undefined, issue('2026-10-11T10:00:00Z', '2026-10-11T10:00:25Z'))).toBeUndefined()
+  it('credits nobody when another person acted within ten seconds of the last action, before or after', () => {
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:20Z'), owner('2026-10-11T10:00:30Z')])).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:30Z'), owner('2026-10-11T10:00:31Z')])).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:30Z'), owner('2026-10-11T10:00:40Z')])).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:30Z'), owner('2026-10-11T10:00:41Z')])).toEqual({ login: 'alice', id: 41 })
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:19Z'), owner('2026-10-11T10:00:30Z')])).toEqual({ login: 'owner', id: 1 })
   })
-  it('is undefined when neither is recent, or without the issue\'s times', () => {
-    expect(ticketCause(note, comment('2026-10-11T09:00:00Z'), issue('2026-10-10T08:00:00Z', '2026-10-11T10:00:30Z'))).toBeUndefined()
-    expect(ticketCause(note, comment('2026-10-11T10:00:00Z'))).toBeUndefined()
-    expect(ticketCause(note)).toBeUndefined()
-    expect(ticketCause(note, comment('2026-10-11T10:00:00Z'), issue('2026-10-10T08:00:00Z', 'garbage'))).toBeUndefined()
-  })
-  it('is undefined when the notification time is missing or invalid', () => {
-    expect(ticketCause({}, comment('2026-10-11T10:00:00Z'))).toBeUndefined()
-    expect(ticketCause({ updated_at: 'nope' }, comment('2026-10-11T10:00:00Z'))).toBeUndefined()
+  it('ignores actions after the notification when picking the cause', () => {
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T10:00:05Z'), owner('2026-10-11T10:00:50Z')])).toEqual({ login: 'alice', id: 41 })
+    expect(ticketCause(note, oldIssue, [owner('2026-10-11T10:00:50Z')])).toBeUndefined()
   })
   it('stops at exactly a minute', () => {
-    expect(ticketCause(note, comment('2026-10-11T09:59:30Z'), issue('2026-10-10T08:00:00Z', '2026-10-11T09:59:30Z'))).toEqual({ login: 'alice', id: 41 })
-    expect(ticketCause(note, comment('2026-10-11T09:59:29Z'), issue('2026-10-10T08:00:00Z', '2026-10-11T09:59:29Z'))).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T09:59:30Z')])).toEqual({ login: 'alice', id: 41 })
+    expect(ticketCause(note, oldIssue, [alice('2026-10-11T09:59:29Z')])).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [])).toBeUndefined()
+  })
+  it('is undefined without the issue or a complete timeline, or with an unreadable time', () => {
+    expect(ticketCause(note, oldIssue)).toBeUndefined()
+    expect(ticketCause(note, undefined, [alice('2026-10-11T10:00:00Z')])).toBeUndefined()
+    expect(ticketCause(note)).toBeUndefined()
+    expect(ticketCause(note, oldIssue, [alice('garbage')])).toBeUndefined()
+    expect(ticketCause(note, owner('garbage'), [alice('2026-10-11T10:00:00Z')])).toBeUndefined()
+  })
+  it('is undefined when the notification time is missing or invalid', () => {
+    expect(ticketCause({}, oldIssue, [alice('2026-10-11T10:00:00Z')])).toBeUndefined()
+    expect(ticketCause({ updated_at: 'nope' }, oldIssue, [alice('2026-10-11T10:00:00Z')])).toBeUndefined()
   })
 })
 

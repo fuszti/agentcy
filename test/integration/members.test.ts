@@ -11,7 +11,7 @@ import { cmdInvite, cmdMember, cmdUninvite, type MemberDeps } from '../../src/cl
 import { realMemberDeps } from '../../src/cli/member-deps.js'
 import { loadMembers } from '../../src/lib/members.js'
 import { saveProject } from '../../src/lib/projects.js'
-import { classifyPost, channelTypeOf, findHuman, ticketCause } from '../../src/mcp/policy.js'
+import { classifyPost, channelTypeOf, findHuman, ticketCause, TICKET_AMBIGUOUS_MS, TICKET_TIMELINE_LOOKBACK_MS } from '../../src/mcp/policy.js'
 import { rosterCache } from '../../src/lib/members.js'
 import { prepareAgentGitIdentity, workspaceDir } from '../../src/lib/workspace.js'
 import type { ChatPost } from '../../src/lib/types.js'
@@ -285,22 +285,27 @@ describe.skipIf(!process.env.OFFICE_INTEGRATION)('invited members on a real stac
       // The forced password change is lifted by the earlier repo test; do it again so this test stands alone.
       await fjAdmin.adminResetPassword(username, gitPassword, false)
       const issue = await fjAdmin.createIssue(config.forgejoOrg, web, { title: `member ticket ${tag}`, body: 'x', assignees: [botName] })
+      // Two people acting on one issue within TICKET_AMBIGUOUS_MS cannot be told apart, so let the creation age first.
+      await new Promise(r => setTimeout(r, TICKET_AMBIGUOUS_MS + 2000))
+      // A plain comment does not notify a mere assignee on Forgejo 16; a mention does.
       const comment = await fjAs(username, gitPassword)(`/repos/${config.forgejoOrg}/${web}/issues/${issue.number}/comments`, {
-        method: 'POST', body: JSON.stringify({ body: `a comment from the member ${tag}` }),
+        method: 'POST', body: JSON.stringify({ body: `@${botName} a comment from the member ${tag}` }),
       })
       expect(comment.status).toBe(201)
+      const commentedAt = Date.parse(((await comment.json()) as { created_at: string }).created_at)
 
       let note: Awaited<ReturnType<ForgejoClient['listNotifications']>>[number] | undefined
       for (let i = 0; i < 20 && !note; i++) {
-        note = (await botFj.listNotifications({ unreadOnly: true })).find(n => n.subject.url.endsWith(`/${web}/issues/${issue.number}`) && n.subject.latest_comment_url)
+        note = (await botFj.listNotifications({ unreadOnly: true })).find(n => n.subject.url.endsWith(`/${web}/issues/${issue.number}`) && Date.parse(n.updated_at ?? '') >= commentedAt)
         if (!note) await new Promise(r => setTimeout(r, 1000))
       }
-      if (!note?.subject.latest_comment_url) throw new Error('the assigned bot got no notification for the member comment')
-      const commentNote = await botFj.commentInfo(note.subject.latest_comment_url)
-      expect(commentNote?.login).toBe(username)
+      if (!note) throw new Error('the assigned bot got no notification for the member comment')
       const owner = await mmAdmin.getUserByUsername(config.human.username)
       const humans = rosterCache(repoRoot(), { userId: owner.id, username: owner.username })
-      const cause = ticketCause(note, commentNote, await botFj.issueInfo(config.forgejoOrg, web, issue.number))
+      const since = new Date(Date.parse(note.updated_at ?? '') - TICKET_TIMELINE_LOOKBACK_MS).toISOString()
+      const timeline = await botFj.issueTimeline(config.forgejoOrg, web, issue.number, since)
+      expect(timeline?.at(-1)?.login).toBe(username)
+      const cause = ticketCause(note, await botFj.issueInfo(config.forgejoOrg, web, issue.number), timeline)
       expect(cause?.login).toBe(username)
       expect(findHuman(humans(), { forgejoUserId: cause?.id })?.role).toBe('member')
     }, 60_000)

@@ -167,10 +167,15 @@ their own username; the username is kept for rendering.
 The `human=true` marker in `mcp.log` keeps its format, because the watchdog parses it.
 
 Forgejo events are always `fromHuman: false` today, also for the owner. `pollTickets` marks the
-event with `fromHuman` and `role` only when the cause is certain (`ticketCause`): every comment,
-assignment, label change and edit moves the issue's `updated_at` (verified on Forgejo 16), so
-the latest comment counts when it is the issue's latest change, and the issue's author counts
-when nothing touched the issue after it was created; both within a minute of the notification.
+event with `fromHuman` and `role` only when the cause is certain (`ticketCause`). The actor is
+read from the issue's own record: its creation, then its timeline
+(`GET /repos/{owner}/{repo}/issues/{n}/timeline`), which names who made each comment, assignment,
+label, title and state change (verified on Forgejo 16; a body edit leaves no entry). The
+notification itself does not name its actor. Its time is the time of the last action that
+notified (creation, comment, close, reopen, assignment), up to a few seconds late; labels and
+title edits do not notify. The cause is therefore the last action at or before the notification,
+when it is at most a minute older and nobody else acted on the issue within ten seconds of it,
+before or after. Timestamps have one-second resolution, so closer calls stay unknown.
 The actor is matched by Forgejo user id. Anything else stays a plain Forgejo event.
 
 The MCP reads the roster at start and again when the file's mtime changes, so a running agent

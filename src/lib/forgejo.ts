@@ -121,15 +121,15 @@ export interface Notification {
 }
 
 /** Forgejo REST client. */
-/** The Forgejo account behind a comment or an issue, and when it was created. */
+/** The Forgejo account behind an issue or one action on it, and when that happened. */
 export interface TicketActor { login: string; id: number; createdAt: string }
-/** An issue's author plus when the issue last changed (any comment, assignment, label or edit moves it). */
-export interface IssueActor extends TicketActor { updatedAt: string }
-interface RawActor { user?: { login?: string; id?: number }; created_at?: string; updated_at?: string }
+interface RawActor { id?: number; user?: { login?: string; id?: number }; created_at?: string }
 function toActor(raw: RawActor): TicketActor | undefined {
   const { user, created_at } = raw
   return user?.login && typeof user.id === 'number' && created_at ? { login: user.login, id: user.id, createdAt: created_at } : undefined
 }
+/** Forgejo's default page size; a timeline answer this long may be cut off. */
+const TIMELINE_PAGE = 30
 
 export class ForgejoClient {
   constructor(
@@ -454,11 +454,27 @@ export class ForgejoClient {
   }
 
   /** Who opened an issue or pull request and when (the issues endpoint serves both). */
-  async issueInfo(owner: string, repo: string, number: number): Promise<IssueActor | undefined> {
+  async issueInfo(owner: string, repo: string, number: number): Promise<TicketActor | undefined> {
     try {
-      const raw = await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`)
-      const actor = toActor(raw)
-      return actor && raw.updated_at ? { ...actor, updatedAt: raw.updated_at } : undefined
+      return toActor(await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`))
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Who did what on an issue or pull request since `since`, oldest first: comments, assignments,
+   * label, title and state changes each carry their actor (verified on Forgejo 16; a body edit
+   * leaves no entry). Undefined when the answer is not certainly complete: the request failed,
+   * the page is full, or an entry has no actor.
+   */
+  async issueTimeline(owner: string, repo: string, number: number, since: string): Promise<TicketActor[] | undefined> {
+    try {
+      const raw = await this.request<RawActor[] | null>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}/timeline?since=${encodeURIComponent(since)}`)
+      const entries = [...(raw ?? [])].sort((x, y) => (x.id ?? 0) - (y.id ?? 0))
+      if (entries.length >= TIMELINE_PAGE) return undefined
+      const actors = entries.map(toActor)
+      return actors.every((x): x is TicketActor => x !== undefined) ? actors : undefined
     } catch {
       return undefined
     }
@@ -686,17 +702,6 @@ export class ForgejoClient {
       },
       repository: { full_name: n.repository.full_name },
     }))
-  }
-
-  /** Who wrote the comment behind a latest-comment URL, and when; undefined if unreachable. */
-  async commentInfo(commentUrl: string): Promise<TicketActor | undefined> {
-    try {
-      const res = await fetch(commentUrl, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(30_000) })
-      if (!res.ok) return undefined
-      return toActor((await res.json()) as RawActor)
-    } catch {
-      return undefined
-    }
   }
 
   async markNotificationRead(id: string): Promise<void> {

@@ -61,37 +61,37 @@ export function findHuman(humans: Human[], who: { userId?: string; username?: st
   return undefined
 }
 
-/** How close a comment or an issue's creation must be to the notification to count as its cause. */
+/** How long before the notification its cause may lie. */
 export const TICKET_CAUSE_WINDOW_MS = 60_000
-/** How close an action must be to the issue's updated_at to be the issue's latest change. */
-export const TICKET_LATEST_CHANGE_MS = 2_000
+/** Two people acting on one issue this close together cannot be told apart. */
+export const TICKET_AMBIGUOUS_MS = 10_000
+/** How far back the issue timeline must reach for `ticketCause`. */
+export const TICKET_TIMELINE_LOOKBACK_MS = TICKET_CAUSE_WINDOW_MS + TICKET_AMBIGUOUS_MS
 
 /**
- * Who caused a Forgejo notification, only when that is certain. A notification also fires for
- * assignments, label changes and edits by someone else, and every one of those moves the issue's
- * updated_at (verified on Forgejo 16). So an actor counts only when their action is the issue's
- * latest change and happened within a minute of the notification:
- * - the latest comment, when the issue was last updated by that comment;
- * - else the issue author, when nothing touched the issue after it was created.
- * Without the issue's times nothing is certain, so nobody.
+ * Who caused a Forgejo notification, only when that is certain. The notification does not name
+ * its actor, and its time is the time of the last action that notified (a creation, comment,
+ * close, reopen or assignment; a few seconds late at most), while labels and title edits by
+ * someone else land in between without notifying (verified on Forgejo 16). So the actor is read
+ * from the issue's own record: its creation, then its timeline entries in order (each names who
+ * acted). The cause is the last action at or before the notification, when it is at most a
+ * minute older and nobody else acted on the issue within ten seconds of it, before or after.
+ * Timestamps have one-second resolution, so closer calls stay unknown.
+ * Without the issue or a complete timeline nothing is certain, so nobody.
  */
 export function ticketCause(
   note: { updated_at?: string },
-  comment?: { login: string; id: number; createdAt: string },
-  issue?: { login: string; id: number; createdAt: string; updatedAt: string },
+  issue?: { login: string; id: number; createdAt: string },
+  timeline?: { login: string; id: number; createdAt: string }[],
 ): { login: string; id: number } | undefined {
   const at = Date.parse(note.updated_at ?? '')
-  if (Number.isNaN(at) || !issue) return undefined
-  const updated = Date.parse(issue.updatedAt)
-  if (Number.isNaN(updated)) return undefined
-  const within = (iso: string, t: number, ms: number): boolean => Math.abs(Date.parse(iso) - t) <= ms
-  if (comment && within(comment.createdAt, at, TICKET_CAUSE_WINDOW_MS) && within(comment.createdAt, updated, TICKET_LATEST_CHANGE_MS)) {
-    return { login: comment.login, id: comment.id }
-  }
-  if (within(issue.createdAt, at, TICKET_CAUSE_WINDOW_MS) && within(issue.createdAt, updated, TICKET_LATEST_CHANGE_MS)) {
-    return { login: issue.login, id: issue.id }
-  }
-  return undefined
+  if (Number.isNaN(at) || !issue || !timeline) return undefined
+  const actions = [issue, ...timeline].map(a => ({ login: a.login, id: a.id, t: Date.parse(a.createdAt) }))
+  if (actions.some(a => Number.isNaN(a.t))) return undefined
+  const last = actions.filter(a => a.t <= at).at(-1)
+  if (!last || at - last.t > TICKET_CAUSE_WINDOW_MS) return undefined
+  if (actions.some(a => a.id !== last.id && Math.abs(a.t - last.t) <= TICKET_AMBIGUOUS_MS)) return undefined
+  return { login: last.login, id: last.id }
 }
 
 /** A delivery the watchdog expects a chat answer to. Ticket events are answered in the ticket. */

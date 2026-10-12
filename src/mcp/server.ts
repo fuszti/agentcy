@@ -22,7 +22,7 @@ import {
   sanitizeAttachmentFilename,
   workspaceDir,
 } from '../lib/workspace.js'
-import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, countsAsHumanDelivery, findHuman, firstCatchUpCursor, renderDigest, renderEvents, ticketCause, type AgentContext } from './policy.js'
+import { DeliveryQueue, PostGuard, channelTypeOf, classifyPost, countsAsHumanDelivery, findHuman, firstCatchUpCursor, renderDigest, renderEvents, ticketCause, TICKET_TIMELINE_LOOKBACK_MS, type AgentContext } from './policy.js'
 import { ClaudeTmuxWakeAdapter } from '../lib/harness/claude.js'
 import { OpencodeWakeAdapter } from '../lib/harness/opencode.js'
 import { activeMembers, loadMembers, rosterCache } from '../lib/members.js'
@@ -790,9 +790,12 @@ async function pollTickets() {
       const repo = n.repository.full_name ?? defaultRepo
       const [repoOwner, repoName] = repo.split('/')
       // Who caused this, only when certain (see ticketCause); else it stays a plain Forgejo event.
-      const comment = n.subject.latest_comment_url ? await fj.commentInfo(n.subject.latest_comment_url) : undefined
       const issue = num && repoOwner && repoName ? await fj.issueInfo(repoOwner, repoName, num) : undefined
-      const cause = ticketCause(n, comment, issue)
+      const noteAt = Date.parse(n.updated_at ?? '')
+      const timeline = issue && !Number.isNaN(noteAt)
+        ? await fj.issueTimeline(repoOwner, repoName, num, new Date(noteAt - TICKET_TIMELINE_LOOKBACK_MS).toISOString())
+        : undefined
+      const cause = ticketCause(n, issue, timeline)
       const from = cause?.login
       // People are matched by Forgejo user id: a login can be renamed or taken over.
       const author = cause ? findHuman(humans(), { forgejoUserId: cause.id }) : undefined
