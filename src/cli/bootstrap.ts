@@ -6,9 +6,10 @@ import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgent, loadAgent } from '../lib/config.js'
+import { loadConfig, repoRoot, saveSecrets, loadSecrets, agentStateDir, saveAgent, loadAgent, listAgents } from '../lib/config.js'
 import { MattermostClient } from '../lib/mattermost.js'
-import { ForgejoClient } from '../lib/forgejo.js'
+import { ForgejoClient, ensureForgejoPrivacy } from '../lib/forgejo.js'
+import { ensureChatRoles } from '../lib/chat-roles.js'
 import type { OfficeSecrets, ChatChannel } from '../lib/types.js'
 import { assertStackOwnership, composeEnv, composeFileArgs, writeInfraEnv } from '../lib/infra.js'
 
@@ -298,6 +299,9 @@ async function ensureOfficeBot(
   return { userId, token }
 }
 
+const ADMIN_CHANNEL_PURPOSE = 'Owner console: type office commands here (help for the list)'
+const FINANCE_CHANNEL_PURPOSE = 'Owner finance console: resource-group usage/cost report and alerts (type `finance` for the list)'
+
 /** Create (idempotently) a private channel with only the owner and the office bot as members. */
 async function ensureOwnerBotChannel(
   client: MattermostClient,
@@ -420,6 +424,45 @@ async function ensureForgejoOrgAndRepo(
   ])
 }
 
+/** Converge the chat roles for every hired agent bot, the office bot and any `extraBotIds`. */
+async function ensureAgentChatRoles(mm: MattermostClient, secrets: OfficeSecrets, extraBotIds: string[] = []): Promise<void> {
+  const bots = new Set<string>(extraBotIds)
+  for (const name of await listAgents()) {
+    const rec = await loadAgent(name)
+    if (rec?.status === 'hired') bots.add(rec.mattermost.userId)
+  }
+  if (secrets.officeBot?.userId) bots.add(secrets.officeBot.userId)
+  await ensureChatRoles(mm, secrets.mattermost.teamId, [...bots])
+}
+
+/**
+ * Converge who can see what: chat roles (agents are trimmed team admins, plain team users only see
+ * channels they were added to) and Forgejo privacy (org and repos private). Idempotent; run by
+ * `office init` and `office up`. Does nothing before the office is initialised.
+ */
+export async function ensureOfficePolicies(): Promise<void> {
+  const config = await loadConfig()
+  const secrets = await loadSecrets()
+  if (!secrets?.mattermost.adminToken || !secrets.forgejo.adminToken) return
+  await waitForMattermost(config.mattermostUrl)
+  await waitForForgejo(config.forgejoUrl)
+
+  const mm = new MattermostClient(config.mattermostUrl, secrets.mattermost.adminToken)
+  await ensureAgentChatRoles(mm, secrets)
+
+  // Re-prune the owner-only channels, so a stray membership does not survive until the next init.
+  if (secrets.officeBot?.userId) {
+    const { teamId, humanUserId } = secrets.mattermost
+    await ensureOwnerBotChannel(mm, teamId, humanUserId, secrets.officeBot.userId, config.adminChannel, ADMIN_CHANNEL_PURPOSE)
+    await ensureOwnerBotChannel(mm, teamId, humanUserId, secrets.officeBot.userId, config.financeChannel, FINANCE_CHANNEL_PURPOSE)
+  }
+
+  const changed = await ensureForgejoPrivacy(new ForgejoClient(config.forgejoUrl, secrets.forgejo.adminToken), config.forgejoOrg)
+  if (changed.org || changed.repos.length) {
+    console.log(`Forgejo: made private: ${[...(changed.org ? [`org ${config.forgejoOrg}`] : []), ...changed.repos].join(', ')}`)
+  }
+}
+
 /** Idempotent bootstrap of the whole local office. */
 export async function bootstrap(): Promise<void> {
   assertStackOwnership(repoRoot())
@@ -441,8 +484,8 @@ export async function bootstrap(): Promise<void> {
   const teamId = await ensureMattermostTeamAndChannels(mm, config, mmHuman.userId)
 
   const officeBot = await ensureOfficeBot(mm, config, secrets, teamId)
-  await ensureOwnerBotChannel(mm, teamId, mmHuman.userId, officeBot.userId, config.adminChannel, 'Owner console: type office commands here (help for the list)')
-  await ensureOwnerBotChannel(mm, teamId, mmHuman.userId, officeBot.userId, config.financeChannel, 'Owner finance console: resource-group usage/cost report and alerts (type `finance` for the list)')
+  await ensureOwnerBotChannel(mm, teamId, mmHuman.userId, officeBot.userId, config.adminChannel, ADMIN_CHANNEL_PURPOSE)
+  await ensureOwnerBotChannel(mm, teamId, mmHuman.userId, officeBot.userId, config.financeChannel, FINANCE_CHANNEL_PURPOSE)
 
   const fjAdmin = await ensureForgejoAdmin(config, secrets)
   const fj = new ForgejoClient(config.forgejoUrl, fjAdmin.adminToken)
@@ -462,6 +505,7 @@ export async function bootstrap(): Promise<void> {
     officeBot,
   }
   await saveSecrets(secrets)
+  await ensureOfficePolicies()
 
   console.log('\nAgent Office bootstrapped.')
   console.log(`Mattermost: ${config.mattermostUrl}`)
@@ -500,6 +544,9 @@ export async function createAgentIdentity(
 
   await mm.updateUserRoles(userId, 'system_user')
   await mm.addUserToTeam(secrets.mattermost.teamId, userId)
+  // Agents are team admins: plain team users (invited members) cannot list or join public channels.
+  // ensureChatRoles trims team_admin first, so the new bot is never promoted into the stock rights.
+  await ensureAgentChatRoles(mm, secrets, [userId])
   const channels = await mm.getPublicChannels(secrets.mattermost.teamId)
   for (const ch of channels) {
     try {

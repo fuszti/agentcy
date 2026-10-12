@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto'
 import net from 'node:net'
 import type { AgentRecord, Harness } from '../lib/types.js'
 import { agentStateDir, listAgents, loadAgent, loadConfig, loadSecrets, repoRoot, saveAgent, saveConfig, stateDir } from '../lib/config.js'
-import { bootstrap, createAgentIdentity, retireAgentIdentity } from './bootstrap.js'
+import { bootstrap, createAgentIdentity, ensureOfficePolicies, retireAgentIdentity } from './bootstrap.js'
 import { MattermostClient } from '../lib/mattermost.js'
 import { ForgejoClient } from '../lib/forgejo.js'
 import { agentBrainDir, commitBrain, ensureBrain, prepareAgentGitIdentity, projectBrainDir, seedAgentBrain, workspaceDir, writeWorkspaceInstructions } from '../lib/workspace.js'
@@ -20,6 +20,8 @@ import { MOVED_PROMPT, exportOffice, importOffice } from '../lib/migrate.js'
 import { cmdVault } from './vault-cmd.js'
 import { runSetup } from './setup.js'
 import { cmdDev, type DevDeps } from './dev-cmd.js'
+import { cmdInvite, cmdMember, cmdUninvite } from './member-cmd.js'
+import { realMemberDeps } from './member-deps.js'
 import { opencodeProviderOverrides, vaultEnvDefaults, vaultEnvForAgent, withEnvFile, writeAgentEnvFile } from '../lib/vault.js'
 import { findClaudeSessionFile, readClaudeTranscript, renderTranscript } from '../lib/transcript.js'
 import { capturePane, killWindow, openWindow, paneAlive, windowExists, windowTarget } from '../lib/tmux.js'
@@ -101,10 +103,17 @@ async function nextOpencodePort(): Promise<number> {
   return p
 }
 
-async function ensureInfra() {
+/** `strictPolicies`: a failed policy step aborts (`up`); otherwise it only warns and the office runs as before (`start`). */
+async function ensureInfra(opts: { strictPolicies: boolean }) {
   assertStackOwnership(root)
   const r = spawnSync('docker', ['compose', ...composeFileArgs(root), 'up', '-d'], { stdio: 'inherit', env: composeEnv() })
   if (r.status !== 0) throw new Error('docker compose up failed')
+  try {
+    await ensureOfficePolicies()
+  } catch (e) {
+    if (opts.strictPolicies) throw e
+    console.error(`warning: office policies were not applied: ${(e as Error).message}. The office runs as before; invited members are refused until \`office up\` succeeds.`)
+  }
 }
 
 // ------------------------------------------------------------------ start / stop
@@ -761,7 +770,7 @@ async function main() {
   const targets = async () => (flags.all === true || !pos.length ? (await allAgents()).filter(a => a.status === 'hired') : await Promise.all(pos.map(n => agent(slug(n)))))
   switch (cmd) {
     case 'init': await bootstrap(); ensureBrain(root); console.log('office initialised'); break
-    case 'up': await ensureInfra(); break
+    case 'up': await ensureInfra({ strictPolicies: true }); break
     case 'setup': await runSetup(root, flags); break
     case 'dev': await cmdDev(pos, flags, devDeps); break
     case 'vault': await cmdVault(root, cfg.resourceGroups, pos); break
@@ -788,7 +797,7 @@ async function main() {
     case 'import': await cmdImport(pos, flags); break
     case 'shutdown': assertInitialised(root, 'shutdown'); await shutdownOffice(); break
     case 'hire': await cmdHire(pos, flags); break
-    case 'start': await ensureInfra(); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
+    case 'start': await ensureInfra({ strictPolicies: false }); await ensureAdminDaemon(); for (const a of await targets()) await startAgent(a); break
     case 'stop': for (const a of await targets()) await stopAgent(a); break
     case 'restart': for (const a of await targets()) { await stopAgent(a); await startAgent(await agent(a.name)) } break
     case 'status': await cmdStatus(flags); break
@@ -821,6 +830,9 @@ async function main() {
       break
     }
     case 'retire': { const a = await agent(slug(pos[0] ?? '')); await stopAgent(a); await retireAgentIdentity(a.name); a.status = 'retired'; await saveAgent(a); console.log(`@${a.name} retired`); break }
+    case 'invite': assertInitialised(root, 'invite'); await cmdInvite(pos, flags, await realMemberDeps(root, cfg)); break
+    case 'member': assertInitialised(root, 'member'); await cmdMember(pos, flags, await realMemberDeps(root, cfg)); break
+    case 'uninvite': assertInitialised(root, 'uninvite'); await cmdUninvite(pos, await realMemberDeps(root, cfg)); break
     case 'freeze': fs.writeFileSync(path.join(stateDir(), 'freeze'), new Date().toISOString()); console.log('office frozen: only human messages are delivered, agent posts refused'); break
     case 'unfreeze': fs.rmSync(path.join(stateDir(), 'freeze'), { force: true }); console.log('office unfrozen'); break
     case 'say': await cmdSay(pos, flags); break
@@ -861,6 +873,11 @@ async function main() {
   shift <agent>                memory write-back, then fresh session
   model <agent> <model>        switch the agent's model (e.g. sonnet, opus, opencode-go/deepseek-v4-pro) and restart it in the same session
   retire <agent>               stop and deactivate
+  invite <username> --projects a,b [--channels x,y] [--name "Display Name"] [--email e]
+                               invite a person: chat and tickets accounts, limited to those projects and channels
+  member [list | grant <username> --projects a [--channels x] | revoke <username> --projects a [--channels x] | reset-password <username>]
+                               invited members and what they can see
+  uninvite <username>          deactivate a member's accounts and remove their access
   freeze | unfreeze            stop agent chatter (only the owner's messages get through)
   say <text> [--channel c] [--thread id]    post as the owner (testing)
   prompt <agent> <text>        queue a raw prompt for an agent

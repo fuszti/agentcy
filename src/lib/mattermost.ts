@@ -129,7 +129,7 @@ export class MattermostClient {
     return this.request('GET', `/users/${id}`)
   }
 
-  async getUserByUsername(username: string): Promise<{ id: string; username: string; email: string; roles: string }> {
+  async getUserByUsername(username: string): Promise<{ id: string; username: string; email: string; roles: string; is_bot?: boolean; delete_at?: number }> {
     return this.request('GET', `/users/username/${encodeURIComponent(username)}`)
   }
 
@@ -381,6 +381,33 @@ export class MattermostClient {
 
   async updateUserRoles(userId: string, roles: string): Promise<void> {
     await this.request('PUT', `/users/${userId}/roles`, { roles })
+  }
+
+  async getRoleByName(name: string): Promise<{ id: string; name: string; permissions: string[] }> {
+    return this.request('GET', `/roles/name/${encodeURIComponent(name)}`)
+  }
+
+  /** Replace a role's permission list. Works for built-in roles on Team Edition with a system-admin token. */
+  async patchRolePermissions(roleId: string, permissions: string[]): Promise<void> {
+    await this.request('PUT', `/roles/${encodeURIComponent(roleId)}/patch`, { permissions })
+  }
+
+  async getTeamMember(teamId: string, userId: string): Promise<{ scheme_admin: boolean }> {
+    return this.request('GET', `/teams/${teamId}/members/${userId}`)
+  }
+
+  async setTeamAdmin(teamId: string, userId: string): Promise<void> {
+    await this.request('PUT', `/teams/${teamId}/members/${userId}/schemeRoles`, { scheme_admin: true, scheme_user: true })
+  }
+
+  /** Admin reset: no current password needed. */
+  async setUserPassword(userId: string, password: string): Promise<void> {
+    await this.request('PUT', `/users/${userId}/password`, { new_password: password })
+  }
+
+  /** Deactivate an account; its sessions end. */
+  async deactivateUser(userId: string): Promise<void> {
+    await this.request('DELETE', `/users/${userId}`)
   }
 
   async listUserTokens(userId: string): Promise<{ id: string; description: string; token: string }[]> {

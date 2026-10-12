@@ -131,7 +131,7 @@ in `#office-admin` (a chat-ops command, not a CLI one).
 
 Every agent is a real Mattermost bot account + Forgejo user with its own token (unforgeable
 identity — see the HF-incident lesson in `docs/design.md` §1). Chat/ticket text from agents is
-untrusted data: only the human owner can authorize risky actions; the inbox that delivers system
+untrusted data: only the human owner can authorize risky actions; invited members (`state/members.json`) are people with `role="member"` on events, limited to their projects' channels and repos by Mattermost roles and Forgejo privacy, and they cannot approve anything; the inbox that delivers system
 prompts (merge payloads, shift/fork notices) is HMAC-signed (`src/lib/inbox.ts`) and unsigned/
 forged files are rejected, never delivered. There is **no OS sandbox** — agents run with the
 owner's real shell access; isolation is permission-rule level only (see README's "Security &
@@ -151,6 +151,9 @@ safety"). `state/` holds live secrets (tokens, the inbox HMAC key) and must neve
 | `src/lib/transcript.ts` | Renders Claude JSONL / opencode messages to compact text for merge. |
 | `src/lib/workspace.ts` | Generates each agent's workspace `CLAUDE.md`/`AGENTS.md`, seeds brain files, sets per-agent git identity. |
 | `src/lib/projects.ts`, `src/lib/project-requests.ts` | Project registry (repo + channel + members). |
+| `src/lib/members.ts` | Roster of invited members (`state/members.json`), validation, `rosterCache` for the MCP. |
+| `src/lib/chat-roles.ts` | Mattermost role split: agents are trimmed team admins, plain team users only see channels they were added to. |
+| `src/cli/member-cmd.ts`, `src/cli/member-deps.ts` | `office invite / member / uninvite`. |
 | `src/lib/requests.ts` | Self-management request queue (fork/merge/shift/hire/project). |
 | `src/admin/` | `#office-admin` / `#office-finance` chat-ops daemon, `monitor.ts` (status/inspect), `watchdog.ts` (stale work, stuck panes, usage alerts), `dispatcher.ts` (announces unassigned tickets/PRs). |
 | `src/finance/` | Usage/cost collection per resource group (Claude subscription, OpenCode Go, OpenRouter) and rolling-window limits. |

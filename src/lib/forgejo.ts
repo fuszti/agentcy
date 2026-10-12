@@ -121,6 +121,16 @@ export interface Notification {
 }
 
 /** Forgejo REST client. */
+/** The Forgejo account behind an issue or one action on it, and when that happened. */
+export interface TicketActor { login: string; id: number; createdAt: string }
+interface RawActor { id?: number; user?: { login?: string; id?: number }; created_at?: string }
+function toActor(raw: RawActor): TicketActor | undefined {
+  const { user, created_at } = raw
+  return user?.login && typeof user.id === 'number' && created_at ? { login: user.login, id: user.id, createdAt: created_at } : undefined
+}
+/** Forgejo's default page size; a timeline answer this long may be cut off. */
+const TIMELINE_PAGE = 30
+
 export class ForgejoClient {
   constructor(
     private baseUrl: string,
@@ -176,11 +186,54 @@ export class ForgejoClient {
     })
   }
 
-  async adminResetPassword(username: string, password: string): Promise<void> {
+  async adminResetPassword(username: string, password: string, mustChange = false): Promise<void> {
     await this.request('PATCH', `/admin/users/${encodeURIComponent(username)}`, {
       password,
-      must_change_password: false,
+      must_change_password: mustChange,
+      login_name: username,
+      source_id: 0,
     })
+  }
+
+
+  /** Block or unblock an account. A blocked account cannot log in or use its tokens. */
+  async setProhibitLogin(username: string, prohibit: boolean): Promise<void> {
+    await this.request('PATCH', `/admin/users/${encodeURIComponent(username)}`, {
+      prohibit_login: prohibit,
+      login_name: username,
+      source_id: 0,
+    })
+  }
+
+
+  /** Read one account as an admin; undefined when it does not exist. */
+  async adminGetUser(username: string): Promise<{ id: number; login: string; email: string; is_admin: boolean; prohibit_login: boolean } | undefined> {
+    try {
+      return await this.request('GET', `/users/${encodeURIComponent(username)}`)
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return undefined
+      throw err
+    }
+  }
+
+  /**
+   * Current login of the account with this id (a user can rename themselves), or undefined when it
+   * no longer exists. `/users/search?uid=` answers 200 with an empty list for an unknown id.
+   */
+  async getUserById(id: number): Promise<{ id: number; login: string } | undefined> {
+    const res = await this.request<{ data?: { id: number; login: string }[] }>('GET', `/users/search?uid=${String(id)}`)
+    const hit = res.data?.find(u => u.id === id)
+    return hit ? { id: hit.id, login: hit.login } : undefined
+  }
+
+  /** Forgejo id of a login, or undefined when there is no such user. */
+  async getUserIdByName(login: string): Promise<number | undefined> {
+    try {
+      return (await this.request<{ id: number }>('GET', `/users/${encodeURIComponent(login)}`)).id
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return undefined
+      throw err
+    }
   }
 
   async listTokensForUser(
@@ -273,16 +326,31 @@ export class ForgejoClient {
     return this.request('POST', '/orgs', {
       username,
       full_name: fullName ?? username,
-      visibility: 'public',
+      visibility: 'private',
     })
   }
 
-  async getOrg(name: string): Promise<{ id: number; name: string } | undefined> {
+  async getOrg(name: string): Promise<{ id: number; name: string; visibility: string } | undefined> {
     try {
       return await this.request('GET', `/orgs/${encodeURIComponent(name)}`)
     } catch (err) {
       if ((err as Error).message.includes('404')) return undefined
       throw err
+    }
+  }
+
+  async setOrgVisibility(org: string, visibility: 'public' | 'limited' | 'private'): Promise<void> {
+    await this.request('PATCH', `/orgs/${encodeURIComponent(org)}`, { visibility })
+  }
+
+  /** Every repo of an org. Forgejo caps a page at 50, so this reads all pages. */
+  async listOrgRepos(org: string): Promise<{ name: string; private: boolean }[]> {
+    const out: { name: string; private: boolean }[] = []
+    for (let page = 1; ; page++) {
+      const batch = await this.request<{ name: string; private: boolean }[]>('GET', `/orgs/${encodeURIComponent(org)}/repos?limit=50&page=${String(page)}`)
+      // Stop only on an empty page: a server may cap `limit` below 50 and return short pages.
+      if (!batch.length) return out
+      out.push(...batch.map(r => ({ name: r.name, private: r.private })))
     }
   }
 
@@ -328,6 +396,20 @@ export class ForgejoClient {
     await this.request('PUT', `/teams/${team.id}/members/${encodeURIComponent(username)}`)
   }
 
+  /** True when the user is in the named org team; a missing team or user counts as no. */
+  async isTeamMember(org: string, teamName: string, username: string): Promise<boolean> {
+    const teams = await this.request<{ id: number; name: string }[]>('GET', `/orgs/${encodeURIComponent(org)}/teams`)
+    const team = teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase())
+    if (!team) return false
+    try {
+      await this.request('GET', `/teams/${team.id}/members/${encodeURIComponent(username)}`)
+      return true
+    } catch (err) {
+      if ((err as Error).message.includes('failed: 404')) return false
+      throw err
+    }
+  }
+
   async createOrgRepo(org: string, name: string, input: CreateOrgRepoInput = {}): Promise<{ id: number; name: string; html_url: string }> {
     const repos = await this.request<{ id: number; name: string; html_url: string }[]>('GET', `/orgs/${encodeURIComponent(org)}/repos?limit=100`)
     const existing = repos.find((r) => r.name.toLowerCase() === name.toLowerCase())
@@ -335,7 +417,7 @@ export class ForgejoClient {
     return this.request('POST', `/orgs/${encodeURIComponent(org)}/repos`, {
       name,
       auto_init: input.autoInit ?? false,
-      private: false,
+      private: true,
       default_branch: 'main',
     })
   }
@@ -351,6 +433,51 @@ export class ForgejoClient {
 
   async archiveRepo(owner: string, repo: string): Promise<void> {
     await this.request('PATCH', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { archived: true })
+  }
+
+  async setRepoPrivate(owner: string, repo: string): Promise<void> {
+    await this.request('PATCH', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { private: true })
+  }
+
+  /** Give one user access to one repo, without org or team membership. */
+  async addCollaborator(owner: string, repo: string, username: string, permission: 'read' | 'write' = 'write'): Promise<void> {
+    await this.request('PUT', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(username)}`, { permission })
+  }
+
+  /** A repo or user that is already gone counts as removed. */
+  async removeCollaborator(owner: string, repo: string, username: string): Promise<void> {
+    try {
+      await this.request('DELETE', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(username)}`)
+    } catch (err) {
+      if (!(err as Error).message.includes('failed: 404')) throw err
+    }
+  }
+
+  /** Who opened an issue or pull request and when (the issues endpoint serves both). */
+  async issueInfo(owner: string, repo: string, number: number): Promise<TicketActor | undefined> {
+    try {
+      return toActor(await this.request<RawActor>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}`))
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Who did what on an issue or pull request since `since`, oldest first: comments, assignments,
+   * label, title and state changes each carry their actor (verified on Forgejo 16; a body edit
+   * leaves no entry). Undefined when the answer is not certainly complete: the request failed,
+   * the page is full, or an entry has no actor.
+   */
+  async issueTimeline(owner: string, repo: string, number: number, since: string): Promise<TicketActor[] | undefined> {
+    try {
+      const raw = await this.request<RawActor[] | null>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${String(number)}/timeline?since=${encodeURIComponent(since)}`)
+      const entries = [...(raw ?? [])].sort((x, y) => (x.id ?? 0) - (y.id ?? 0))
+      if (entries.length >= TIMELINE_PAGE) return undefined
+      const actors = entries.map(toActor)
+      return actors.every((x): x is TicketActor => x !== undefined) ? actors : undefined
+    } catch {
+      return undefined
+    }
   }
 
   async createBranchProtection(owner: string, repo: string, branch: string, input: Partial<CreateBranchProtectionInput> = {}): Promise<void> {
@@ -577,19 +704,43 @@ export class ForgejoClient {
     }))
   }
 
-  /** Resolve the author login from a latest-comment URL, if reachable. */
-  async latestCommentAuthor(commentUrl: string): Promise<string | undefined> {
-    try {
-      const res = await fetch(commentUrl, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(30_000) })
-      if (!res.ok) return undefined
-      const comment = (await res.json()) as { user?: { login?: string } }
-      return comment.user?.login
-    } catch {
-      return undefined
-    }
-  }
-
   async markNotificationRead(id: string): Promise<void> {
     await this.request('PATCH', `/notifications/threads/${id}`)
   }
+}
+
+export interface PrivacyClient {
+  getOrg(name: string): Promise<{ visibility: string } | undefined>
+  setOrgVisibility(org: string, visibility: 'private'): Promise<void>
+  listOrgRepos(org: string): Promise<{ name: string; private: boolean }[]>
+  setRepoPrivate(owner: string, repo: string): Promise<void>
+}
+
+/** True only when the org exists, is private and every repo in it is private. Any error counts as not ready. */
+export async function forgejoPrivacyReady(fj: Pick<PrivacyClient, 'getOrg' | 'listOrgRepos'>, org: string): Promise<boolean> {
+  try {
+    if ((await fj.getOrg(org))?.visibility !== 'private') return false
+    return (await fj.listOrgRepos(org)).every(r => r.private)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Make the office org and all its repos private, so an invited member (a per-repo collaborator)
+ * sees only the repos they were given. Agents keep access through the `agents` team. Idempotent;
+ * returns what it changed.
+ */
+export async function ensureForgejoPrivacy(fj: PrivacyClient, org: string): Promise<{ org: boolean; repos: string[] }> {
+  const current = await fj.getOrg(org)
+  if (!current) return { org: false, repos: [] }
+  const repos: string[] = []
+  for (const r of await fj.listOrgRepos(org)) {
+    if (r.private) continue
+    await fj.setRepoPrivate(org, r.name)
+    repos.push(r.name)
+  }
+  const switchOrg = current.visibility !== 'private'
+  if (switchOrg) await fj.setOrgVisibility(org, 'private')
+  return { org: switchOrg, repos }
 }

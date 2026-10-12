@@ -19,7 +19,7 @@ time, but we take reports seriously.
 
 ## Threat model (summary)
 
-Agentcy is designed to be self-hosted, on `localhost`, for one operator, by that operator. It is
+Agentcy is designed to be self-hosted, on `localhost`, for one operator and people that operator trusts and invites. It is
 **not** designed to safely run untrusted agents, or to safely expose its services to untrusted
 users or networks.
 
@@ -33,9 +33,15 @@ In scope:
 - Injection or auth bypass in the office CLI, the MCP server, or the admin/finance chat-ops
   daemons.
 - Secrets (tokens, passwords) leaking into logs, chat, or git history.
+- Bugs that let an invited member read a channel or repo they were not given, or be treated by
+  the office as the owner (approvals, admin and finance commands, freeze).
 
 Out of scope / accepted risk (see also the Security & safety section of the
 [README](README.md)):
+
+- **An invited member prompting an agent into acting as you.** Members can talk to agents that
+  have shell access. The member role restricts visibility and what agents are told to do for
+  them; prompt-level rules are not a sandbox.
 
 - **Agents run as your OS user, with shell access.** Isolation between "the agent" and "your
   machine" is enforced by harness permission rules (Claude Code / opencode permission configs),

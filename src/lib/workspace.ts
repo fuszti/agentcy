@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import type { AgentRecord, OfficeConfig } from './types.js'
 import { agentStateDir, listAgents, loadAgent } from './config.js'
 import { listProjects } from './projects.js'
+import { activeMembers, loadMembers } from './members.js'
 
 export function fill(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m)
@@ -120,7 +121,7 @@ function readFocus(root: string, name: string): string {
 }
 
 /** Build a "Your colleagues" section from hired agent records, including their projects. */
-async function buildColleaguesSection(root: string, cfg: OfficeConfig, self: AgentRecord): Promise<string> {
+export async function buildColleaguesSection(root: string, cfg: OfficeConfig, self: AgentRecord): Promise<string> {
   const names = await listAgents()
   const recs = (await Promise.all(names.map(n => loadAgent(n)))).filter(Boolean) as AgentRecord[]
   const hired = recs.filter(r => r.status === 'hired' && r.name !== self.name)
@@ -134,6 +135,11 @@ async function buildColleaguesSection(root: string, cfg: OfficeConfig, self: Age
     return `- @${r.name} (${r.displayName}) — ${r.harness}, ${r.model}${forkNote}; focus: ${focus || 'general'}${projectsPart}`
   })
   lines.push(`- @${cfg.human.username} (${cfg.human.displayName}) — human owner`)
+  let members: ReturnType<typeof loadMembers> = []
+  try { members = activeMembers(loadMembers(root)) } catch { /* an invalid roster must not block a session start */ }
+  for (const m of members) {
+    lines.push(`- @${m.username} (${m.displayName}) — invited member (a person, not the owner); projects: ${m.projects.join(', ') || 'none'}`)
+  }
   return ['## Your colleagues', lines.join('\n')].join('\n')
 }
 

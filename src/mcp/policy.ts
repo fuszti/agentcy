@@ -1,13 +1,14 @@
 // Delivery policy: classify inbound posts, batch them, render wake prompts and
 // guard outbound posts. Pure logic, no I/O (design.md §4.4 and §4.5).
 
-import type { ChatPost, GuardLimits, InboundEvent, WatchMode } from '../lib/types.js'
+import type { ChatPost, GuardLimits, Human, InboundEvent, WatchMode } from '../lib/types.js'
 
 /** Everything the policy needs to know about the agent it filters for. */
 export interface AgentContext {
   username: string
   userId: string
-  humanUsernames: string[]
+  /** The owner and the active invited members. Posts are matched by Mattermost user id. */
+  humans: Human[]
   /** System usernames are treated like the owner for room-request detection only. */
   systemUsernames?: string[]
   agentChannelPrefix: string
@@ -48,6 +49,56 @@ function mentionsAsWord(text: string, name: string): boolean {
 
 const BROADCAST = /(^|[^@\w.-])@(all|channel|here)(?![\w-])/i
 
+/**
+ * Who of the roster this is. A Mattermost user can rename themselves, so a user id decides when
+ * one is given; the username is only used where no id exists. A Forgejo account is matched by
+ * `forgejoUserId` only, never by login (a Forgejo user can rename themselves).
+ */
+export function findHuman(humans: Human[], who: { userId?: string; username?: string; forgejoUserId?: number }): Human | undefined {
+  if (who.forgejoUserId !== undefined) return humans.find(h => h.forgejoUserId === who.forgejoUserId)
+  if (who.userId !== undefined) return humans.find(h => h.userId === who.userId)
+  if (who.username !== undefined) return humans.find(h => h.username === who.username)
+  return undefined
+}
+
+/** How long before the notification its cause may lie. */
+export const TICKET_CAUSE_WINDOW_MS = 60_000
+/** Two people acting on one issue this close together cannot be told apart. */
+export const TICKET_AMBIGUOUS_MS = 10_000
+/** How far back the issue timeline must reach for `ticketCause`. */
+export const TICKET_TIMELINE_LOOKBACK_MS = TICKET_CAUSE_WINDOW_MS + TICKET_AMBIGUOUS_MS
+
+/**
+ * Who caused a Forgejo notification, only when that is certain. The notification does not name
+ * its actor, and its time is the time of the last action that notified (a creation, comment,
+ * close, reopen or assignment; a few seconds late at most), while labels and title edits by
+ * someone else land in between without notifying (verified on Forgejo 16). So the actor is read
+ * from the issue's own record: its creation, then its timeline entries in order (each names who
+ * acted). The cause is the last action at or before the notification, when it is at most a
+ * minute older and nobody else acted on the issue within ten seconds of it, before or after.
+ * Timestamps have one-second resolution, so closer calls stay unknown.
+ * Without the issue or a complete timeline nothing is certain, so nobody.
+ */
+export function ticketCause(
+  note: { updated_at?: string },
+  issue?: { login: string; id: number; createdAt: string },
+  timeline?: { login: string; id: number; createdAt: string }[],
+): { login: string; id: number } | undefined {
+  const at = Date.parse(note.updated_at ?? '')
+  if (Number.isNaN(at) || !issue || !timeline) return undefined
+  const actions = [issue, ...timeline].map(a => ({ login: a.login, id: a.id, t: Date.parse(a.createdAt) }))
+  if (actions.some(a => Number.isNaN(a.t))) return undefined
+  const last = actions.filter(a => a.t <= at).at(-1)
+  if (!last || at - last.t > TICKET_CAUSE_WINDOW_MS) return undefined
+  if (actions.some(a => a.id !== last.id && Math.abs(a.t - last.t) <= TICKET_AMBIGUOUS_MS)) return undefined
+  return { login: last.login, id: last.id }
+}
+
+/** A delivery the watchdog expects a chat answer to. Ticket events are answered in the ticket. */
+export function countsAsHumanDelivery(ev: InboundEvent): boolean {
+  return ev.fromHuman && ev.kind !== 'ticket'
+}
+
 /** Map one inbound post to the event the agent should see, or null when it must not be woken. */
 export function classifyPost(
   ctx: AgentContext,
@@ -59,7 +110,8 @@ export function classifyPost(
   const hasFiles = (post.files?.length ?? 0) > 0
   if ((text.trim() === '' && !hasFiles) || (meta.postType ?? post.type ?? '').startsWith('system_')) return null
 
-  const fromHuman = ctx.humanUsernames.includes(post.username)
+  const human = findHuman(ctx.humans, { userId: post.userId })
+  const fromHuman = human !== undefined
   const fromSystem = ctx.systemUsernames?.includes(post.username) ?? false
   const roomRequestSource = fromHuman || fromSystem
   const channelType: ChannelType =
@@ -78,6 +130,7 @@ export function classifyPost(
     postId: post.id,
     threadId: post.rootId ?? post.id
   }
+  if (human) ev.role = human.role
   if (hasFiles) {
     ev.attachments = post.files!.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: f.size }))
   }
@@ -288,6 +341,7 @@ function renderEventLine(ev: InboundEvent): string {
       `reason="${escapeAttr(ev.ticket.reason)}"`,
       `from="${escapeAttr(ev.from)}"`,
       `human="${human}"`,
+      ...(ev.role ? [`role="${escapeAttr(ev.role)}"`] : []),
       `at="${escapeAttr(ev.at)}"`
     )
   } else {
@@ -295,10 +349,11 @@ function renderEventLine(ev: InboundEvent): string {
       `channel="${escapeAttr(ev.channel ?? '')}"`,
       `channel_type="${escapeAttr(ev.channelType ?? '')}"`,
       `from="${escapeAttr(ev.from)}"`,
-      `human="${human}"`
+      `human="${human}"`,
+      ...(ev.role ? [`role="${escapeAttr(ev.role)}"`] : [])
     )
     if (ev.fromHuman && ev.channelType === 'agent-only' && ev.kind !== 'room') {
-      attrs.push(`note="owner FYI in agent-only channel"`)
+      attrs.push(`note="${ev.role === 'member' ? 'member' : 'owner'} FYI in agent-only channel"`)
     }
     if (ev.note) attrs.push(`guide="${escapeAttr(ev.note)}"`)
     attrs.push(

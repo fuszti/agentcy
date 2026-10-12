@@ -189,6 +189,41 @@ export interface AgentStatus {
   detail?: string
 }
 
+// ---------------------------------------------------------------- humans
+
+/** The owner approves and administers; a member is an invited collaborator. */
+export type HumanRole = 'owner' | 'member'
+
+/** One person as the delivery policy sees them. Matched by Mattermost user id. */
+export interface Human {
+  userId: string
+  username: string
+  role: HumanRole
+  /** Projects a member was invited to. Unset for the owner. */
+  projects?: string[]
+  /** Forgejo account id (stable across renames); ticket events are matched by it. Unset when unknown. */
+  forgejoUserId?: number
+}
+
+/** One invited member: an entry of state/members.json (no secrets). */
+export interface MemberRecord {
+  /** Same name on Mattermost and Forgejo. Never reused, also after removal. */
+  username: string
+  displayName: string
+  role: 'member'
+  mattermostUserId: string
+  /** Forgejo login at invite time. The account can be renamed later; `forgejoUserId` is the key. */
+  forgejoUsername: string
+  /** Forgejo account id, stable across renames. */
+  forgejoUserId: number
+  projects: string[]
+  /** Extra channels besides the project channels. */
+  channels: string[]
+  invitedAt: string
+  /** ISO time of `office uninvite`, else null. */
+  removedAt: string | null
+}
+
 // ---------------------------------------------------------------- inbound events
 
 export type EventKind =
@@ -208,6 +243,8 @@ export interface InboundEvent {
   at: string // ISO
   from: string // username
   fromHuman: boolean
+  /** Set when the author is a person: the owner or an invited member. */
+  role?: HumanRole
   text: string
   /** Mattermost context. */
   channel?: string // channel name (slug); for DMs "dm"

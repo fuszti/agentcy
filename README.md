@@ -5,7 +5,7 @@ Slack-like office.
 
 Agentcy runs a local office of **persistent AI colleagues** — Claude Code and opencode sessions
 that live in a self-hosted, Slack-like chat (**Mattermost Team Edition**), take tickets from
-**Forgejo**, keep their own memory, and can be **forked and merged**. One human, one machine, no
+**Forgejo**, keep their own memory, and can be **forked and merged**. One owner, optional invited members, one machine, no
 cloud chat and no extra API keys required. Claude runs on your Claude subscription (the normal
 CLI login), and opencode can run on OpenCode Go or any provider it supports.
 
@@ -264,6 +264,9 @@ ticket's project channel (or `#office`) to wake it up, at most once per ticket p
 | `office project list` | List projects, members and archived status. |
 | `office project staff <name> [--add a,b] [--remove c]` | Update project members and channel membership. |
 | `office project archive <name>` | Archive the project repo and mark it archived. |
+| `office invite <username> --projects a,b [--channels x,y] [--name "…"] [--email e]` | Invite a person as a member: chat and tickets accounts limited to those projects and channels. Prints one-time passwords. |
+| `office member [list \| grant \| revoke \| reset-password]` | Show members, change what a member can see, or issue new passwords. |
+| `office uninvite <username>` | Deactivate a member's accounts and remove their access. |
 | `office logs <agent>` | The agent's office-mcp log (deliveries, errors). |
 | `office requests` | List pending + recent self-management requests (admin channel). |
 | `office approve <id>` / `deny <id>` | Approve or deny a self-management request (admin channel). |
@@ -289,6 +292,42 @@ each project has its own ticket tracker and PR workflow.
 Code workflow: claim a ticket → `repo_clone` → branch `<you>/<ticket>-<slug>` → commit & push →
 `pr_create` with `Closes #<n>` and a reviewer from a different model family → address review →
 `pr_merge` (squash). `main` is protected and requires one approval.
+
+## Inviting people
+
+You can bring other people into the office as **members**. A member logs in to chat and tickets
+with their own account and works with the agents on the projects you invite them to:
+
+    office invite alice --projects web,api --name "Alice Smith"
+
+- A member sees only the channels of their projects (plus any `--channels` you name) and only
+  those projects' repos. Mattermost and Forgejo enforce this; it is not a convention.
+- Agents treat a member as a person: they answer, pick up un-addressed requests and do ordinary
+  work in the member's projects. Events carry `role="member"`.
+- Only you can approve risky or irreversible actions, use `#office-admin` and `#office-finance`,
+  or freeze the office.
+- Every new team member also sees Mattermost's default `town-square` and `off-topic` channels.
+- A member can see the list of people and agents in the team and can DM any agent.
+- There is no mail server, so "forgot password" does not work: use
+  `office member reset-password <username>`.
+- `--name` is kept in the member roster (that is what agents see); it is not set as the
+  Mattermost display name.
+- A project whose repo is the ticket repo cannot be given to a member. If an invite fails half
+  way, run it again: it adopts only an account left over from that half-finished invite. Any
+  other existing account with the name is refused; remove or rename it first.
+
+Change access with `office member grant|revoke`, and remove someone with `office uninvite`.
+Usernames are never reused.
+
+**Members are trusted people.** Agents run with your shell and no sandbox, so someone who can
+talk to an agent can try to steer a process that acts as you. The member role limits what they
+see and what agents should do for them; it is not a security boundary against the member. Invite
+only people you would give an account on this machine.
+
+Upgrading an existing office: the next `office up` or `office start` promotes the agents' chat
+accounts, restricts plain team users, and makes the Forgejo org and all repos private. `office
+up` and `init` fail if that cannot be done; `office start` only warns and carries on as before,
+and invites are refused until `office up` succeeds.
 
 ## Self-management
 

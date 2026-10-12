@@ -22,6 +22,7 @@ queue for agent self-management requests. It runs in tmux window `admin`, starte
 - `src/admin/watchdog.ts`: `runWatchdog(deps, state)`, `loadWatchdogState` / `saveWatchdogState`, `clearAlert`.
 - `src/admin/dispatcher.ts`: `dispatchRound`, `buildDispatcherDeps`. Announces unassigned project tickets and PRs without reviewers in `#proj-<project>`.
 - `src/admin/helper.ts`: the `generate` helper. `buildHelperPrompt`, `runHelper` (one-shot `opencode run`), `buildHelperConfig` (every tool denied), `extractJsonBlock`, `validateProposal`, `loadOrRefreshModels`.
+- `src/cli/member-cmd.ts` / `src/cli/member-deps.ts`: `office invite|member|uninvite` (members, see `src/lib/members.ts`). Admin and finance commands and approvals stay owner-only (`humanUserId`); a member can never issue them.
 - `src/lib/requests.ts`: signed request files. `buildRequest`, `writeRequest`, `loadRequest`, `listRequests`, `updateRequest`, `setRequestStatus`, `signRequest`, `verifyRequest`.
 - `src/lib/projects.ts`: registry `state/projects/<name>.json` (`loadProject`, `saveProject`, `listProjects`, `validateProjectName`). `src/lib/project-requests.ts`: `validateProjectRequest` (limits and auto-approve).
 - Agent side of requests: `office_fork_self`, `office_fork_done`, `office_request_shift`, `office_request_hire`, `office_create_project` in `src/mcp/server.ts`.
@@ -48,7 +49,7 @@ queue for agent self-management requests. It runs in tmux window `admin`, starte
 
 ## Testing
 
-- Unit: `test/admin.test.ts` (commands, key leaks), `test/monitor.test.ts`, `test/dispatcher.test.ts`, `test/helper.test.ts`, `test/requests.test.ts`, `test/projects.test.ts`, `test/project-requests.test.ts`, `test/review-fixes.test.ts`.
+- Unit: `test/admin.test.ts` (commands, key leaks), `test/member-cmd.test.ts` (invite, member, uninvite), `test/monitor.test.ts`, `test/dispatcher.test.ts`, `test/helper.test.ts`, `test/requests.test.ts`, `test/projects.test.ts`, `test/project-requests.test.ts`, `test/review-fixes.test.ts`.
 - One file: `npx vitest run test/monitor.test.ts`.
 - `daemon.ts` and the watchdog's I/O need a live stack. In a dev instance: `bin/office dev init`, `bin/office start` (starts the admin daemon in window `admin` of the instance's tmux session), then type commands as the owner in the chat URL that `dev init` prints. `npm run test:integration` covers the Mattermost and Forgejo clients, not the daemon.
 - Never use a live office's `#office-admin` or agents to try a change.
